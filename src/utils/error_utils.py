@@ -89,6 +89,48 @@ class AnalyticsError(ADBError):
     def __init__(self, message: str, code: ErrorCode = ErrorCode.ANALYTICS_CPU_FAILED, context: Optional[Dict] = None):
         super().__init__(message, code, context)
 
+def get_error_message(code: ErrorCode) -> str:
+    """Get error message for a specific error code"""
+    error_messages = {
+        ErrorCode.ADB_NOT_FOUND: "ADB not found",
+        ErrorCode.ADB_SERVER_NOT_RUNNING: "ADB server not running",
+        ErrorCode.ADB_SERVER_START_FAILED: "Failed to start ADB server",
+        ErrorCode.ADB_DEVICE_NOT_FOUND: "ADB device not found",
+        ErrorCode.ADB_DEVICE_UNAUTHORIZED: "ADB device unauthorized",
+        ErrorCode.ADB_DEVICE_OFFLINE: "ADB device offline",
+        ErrorCode.ADB_COMMAND_FAILED: "ADB command failed",
+        ErrorCode.ADB_TIMEOUT: "ADB timeout",
+        ErrorCode.ADB_CONNECTION_FAILED: "ADB connection failed",
+        
+        ErrorCode.DEVICE_NOT_CONNECTED: "Device not connected",
+        ErrorCode.DEVICE_MULTIPLE_CONNECTED: "Multiple devices connected",
+        ErrorCode.DEVICE_PERMISSION_DENIED: "Device permission denied",
+        ErrorCode.DEVICE_IO_ERROR: "Device I/O error",
+        
+        ErrorCode.APP_NOT_FOUND: "App not found",
+        ErrorCode.APP_INSTALL_FAILED: "App installation failed",
+        ErrorCode.APP_UNINSTALL_FAILED: "App uninstallation failed",
+        ErrorCode.APP_LAUNCH_FAILED: "App launch failed",
+        ErrorCode.APP_STOP_FAILED: "App stop failed",
+        ErrorCode.APP_CLEAR_DATA_FAILED: "App clear data failed",
+        
+        ErrorCode.MEMORY_READ_FAILED: "Memory read failed",
+        ErrorCode.MEMORY_PARSE_FAILED: "Memory parse failed",
+        ErrorCode.MEMORY_DUMP_FAILED: "Memory dump failed",
+        
+        ErrorCode.ANALYTICS_CPU_FAILED: "Analytics CPU failed",
+        ErrorCode.ANALYTICS_BATTERY_FAILED: "Analytics battery failed",
+        ErrorCode.ANALYTICS_NETWORK_FAILED: "Analytics network failed",
+        ErrorCode.ANALYTICS_DISK_FAILED: "Analytics disk failed",
+        
+        ErrorCode.SYSTEM_IO_ERROR: "System I/O error",
+        ErrorCode.SYSTEM_PERMISSION_ERROR: "System permission error",
+        ErrorCode.SYSTEM_RESOURCE_ERROR: "System resource error",
+        
+        ErrorCode.UNKNOWN_ERROR: "Unknown error"
+    }
+    return error_messages.get(code, "Unknown error")
+
 class ErrorLogger:
     """Enhanced error logging utility"""
     
@@ -99,50 +141,36 @@ class ErrorLogger:
             log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs')
         os.makedirs(log_dir, exist_ok=True)
         
-        self.log_dir = log_dir
-        self.error_log = os.path.join(log_dir, 'errors.log')
-        self.error_history: List[ErrorInfo] = []
-        self.max_history = 1000
+        # Set up error log file
+        self.error_log_file = os.path.join(log_dir, 'error.log')
+        self.error_handler = logging.FileHandler(self.error_log_file)
+        self.error_handler.setLevel(logging.ERROR)
         
-        # Configure logging
+        # Set up formatter
+        formatter = logging.Formatter(
+            '%(asctime)s - %(levelname)s - [%(error_code)s] %(message)s'
+        )
+        self.error_handler.setFormatter(formatter)
+        
+        # Configure logger
         self.logger = logging.getLogger('error_logger')
         self.logger.setLevel(logging.ERROR)
+        self.logger.addHandler(self.error_handler)
         
-        # File handler
-        file_handler = logging.FileHandler(self.error_log)
-        file_handler.setLevel(logging.ERROR)
+        # Error history
+        self.error_history: List[ErrorInfo] = []
+        self.max_history = 1000  # Keep last 1000 errors
         
-        # Console handler
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.ERROR)
-        
-        # Formatters
-        file_formatter = logging.Formatter(
-            '%(asctime)s - %(levelname)s - [%(error_code)s] %(message)s\nContext: %(context)s\nStack: %(stacktrace)s\n',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        console_formatter = logging.Formatter(
-            '%(asctime)s - %(levelname)s - [%(error_code)s] %(message)s',
-            datefmt='%H:%M:%S'
-        )
-        
-        file_handler.setFormatter(file_formatter)
-        console_handler.setFormatter(console_formatter)
-        
-        self.logger.addHandler(file_handler)
-        self.logger.addHandler(console_handler)
-        
-    def log_error(self, message: str, code: ErrorCode = ErrorCode.UNKNOWN_ERROR,
-                context: Optional[Dict] = None, stacktrace: Optional[str] = None) -> None:
-        """Log an error with detailed information"""
+    def log_error(self, message: str, code: ErrorCode = ErrorCode.UNKNOWN_ERROR, context: Dict = None) -> None:
+        """Log an error with enhanced context"""
         try:
             # Create error info
             error_info = ErrorInfo(
                 code=code,
                 message=message,
                 timestamp=datetime.now(),
-                context=context,
-                stacktrace=stacktrace
+                context=context or {},
+                stacktrace=None  # Will be filled if exception context exists
             )
             
             # Add to history
@@ -150,91 +178,45 @@ class ErrorLogger:
             if len(self.error_history) > self.max_history:
                 self.error_history.pop(0)
                 
-            # Log the error
+            # Get error code name and message
+            error_name = code.name if isinstance(code, ErrorCode) else 'UNKNOWN_ERROR'
+            error_message = get_error_message(code) if isinstance(code, ErrorCode) else message
+            
+            # Log with extra context
             extra = {
-                'error_code': code.name,
-                'context': str(context) if context else 'None',
-                'stacktrace': stacktrace if stacktrace else 'None'
+                'error_code': error_name,
+                'context': context or {}
             }
             
-            self.logger.error(message, extra=extra)
+            self.logger.error(
+                f"{message} - {error_message}",
+                extra=extra,
+                exc_info=True  # Include stack trace if available
+            )
             
         except Exception as e:
-            # Fallback logging
-            print(f"Error logging failed: {str(e)}")
+            # Fallback logging if something goes wrong
+            print(f"Error in error logger: {str(e)}")
             print(f"Original error: {message}")
             
-    def get_recent_errors(self, count: int = 50, code: Optional[ErrorCode] = None) -> List[ErrorInfo]:
-        """Get recent errors with optional filtering"""
-        filtered = [e for e in self.error_history if not code or e.code == code]
-        return list(reversed(filtered[-count:]))
+    def get_recent_errors(self, limit: int = 10) -> List[ErrorInfo]:
+        """Get recent errors from history"""
+        return self.error_history[-limit:]
         
-    def get_error_stats(self) -> Dict[str, int]:
-        """Get statistics about logged errors"""
-        stats = {
-            'total': len(self.error_history),
-            'by_code': {},
-            'by_type': {
-                'adb': 0,
-                'device': 0,
-                'app': 0,
-                'memory': 0,
-                'analytics': 0,
-                'system': 0,
-                'unknown': 0
-            }
-        }
+    def get_errors_by_code(self, code: ErrorCode) -> List[ErrorInfo]:
+        """Get all errors of a specific type"""
+        return [e for e in self.error_history if e.code == code]
         
+    def get_error_summary(self) -> Dict[ErrorCode, int]:
+        """Get summary of error occurrences by type"""
+        summary = {}
         for error in self.error_history:
-            # Count by specific code
-            code_name = error.code.name
-            stats['by_code'][code_name] = stats['by_code'].get(code_name, 0) + 1
-            
-            # Count by error type
-            if 'ADB_' in code_name:
-                stats['by_type']['adb'] += 1
-            elif 'DEVICE_' in code_name:
-                stats['by_type']['device'] += 1
-            elif 'APP_' in code_name:
-                stats['by_type']['app'] += 1
-            elif 'MEMORY_' in code_name:
-                stats['by_type']['memory'] += 1
-            elif 'ANALYTICS_' in code_name:
-                stats['by_type']['analytics'] += 1
-            elif 'SYSTEM_' in code_name:
-                stats['by_type']['system'] += 1
+            if error.code in summary:
+                summary[error.code] += 1
             else:
-                stats['by_type']['unknown'] += 1
-                
-        return stats
+                summary[error.code] = 1
+        return summary
         
-    def clear_error_history(self) -> None:
-        """Clear error history and log file"""
-        try:
-            self.error_history.clear()
-            with open(self.error_log, 'w') as f:
-                f.write('')
-        except Exception as e:
-            print(f"Failed to clear error history: {str(e)}")
-            
-    def get_error_summary(self) -> str:
-        """Get a human-readable summary of recent errors"""
-        stats = self.get_error_stats()
-        recent = self.get_recent_errors(5)
-        
-        summary = [
-            "Error Summary:",
-            f"Total Errors: {stats['total']}",
-            "\nError Types:",
-        ]
-        
-        for type_name, count in stats['by_type'].items():
-            if count > 0:
-                summary.append(f"- {type_name.title()}: {count}")
-                
-        if recent:
-            summary.append("\nMost Recent Errors:")
-            for error in recent:
-                summary.append(f"- [{error.code.name}] {error.message}")
-                
-        return '\n'.join(summary)
+    def clear_history(self) -> None:
+        """Clear error history"""
+        self.error_history.clear()

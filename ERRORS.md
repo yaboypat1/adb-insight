@@ -53,6 +53,71 @@
   - Adding comprehensive error logging
   - Error tracking system records in `logs/error_tracking.db`
 
+### 3. Dependency and Import Conflicts
+- **Description**: Conflicts between ADB libraries and Qt framework dependencies
+  - PyQt6/PySide6 mismatch in requirements.txt
+  - Conflicting imports between pure-python-adb and adb-shell libraries
+  - Module import errors during application startup
+- **Components Affected**: 
+  - `requirements.txt` - Line ~1
+  - `src/utils/adb_utils.py` - Line ~8-11
+  - `src/gui/main_window.py` - Line ~9
+- **Root Causes**:
+  - Requirements file specified PySide6 but codebase uses PyQt6
+  - Mixed usage of incompatible ADB libraries:
+    - `from adb.adb_commands import AdbCommands` (pure-python-adb)
+    - `from adb_shell.adb_device import AdbDeviceUsb, AdbDeviceTcp` (adb-shell)
+  - Error code: SYSTEM_RESOURCE_ERROR when dependencies conflict
+  - Error code: UNKNOWN_ERROR during import failures
+- **Impact**:
+  - Application fails to start
+  - ModuleNotFoundError: No module named 'adb'
+  - Inconsistent ADB command execution
+  - Potential stability issues if both libraries are used
+- **Current Status**: Active
+  - Requirements.txt updated to use PyQt6
+  - Need to standardize on single ADB library
+  - Error logs show import failures in startup sequence
+  - Stack traces indicate module import conflicts
+
+### Log Analysis (2025-03-26)
+
+#### Error Log Samples
+From `logs/errors.log`:
+```
+2025-03-26 18:32:57 - ERROR - [UNKNOWN_ERROR] Error checking device status: too many values to unpack (expected 3)
+Context: None
+Stack: None
+```
+
+#### Application Logs
+1. **ADB Insight Daily Logs**:
+   - `logs/adb_insight_20250326.log` (171.8 KB)
+   - `logs/adb_insight_20250325.log` (88.3 MB)
+   - Contains detailed application activity and debugging information
+   
+2. **Error Logs**:
+   - `logs/errors.log` (140.0 KB)
+   - Tracks critical errors and exceptions
+   - Shows patterns of:
+     - Device connection failures
+     - Import errors during startup
+     - ADB command execution issues
+
+3. **Log Analysis Summary**:
+   - High volume of device status check errors
+   - Frequent import-related crashes during startup
+   - Multiple instances of command parsing failures
+   - Large log file (88.3 MB) from March 25 indicates potential issue with log rotation
+
+4. **Debug Information**:
+   - Application startup attempts: Multiple
+   - Common error patterns:
+     - ModuleNotFoundError: No module named 'adb'
+     - Device status check failures
+     - Command parsing errors
+   - Error frequency: High during startup phase
+
 ## Bug Report Template
 
 When reporting bugs, please include:

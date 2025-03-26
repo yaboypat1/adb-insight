@@ -13,6 +13,8 @@ import psutil
 import humanize
 from .error_utils import ErrorLogger, ErrorCode, ADBError
 from .debug_utils import DebugLogger
+import logging
+import shutil
 
 class ADBUtils:
     """Enhanced utility class for ADB operations"""
@@ -20,7 +22,9 @@ class ADBUtils:
     def __init__(self, debug_logger: DebugLogger, error_logger: ErrorLogger):
         self.debug_logger = debug_logger
         self.error_logger = error_logger
-        self.adb_path = self._find_adb()
+        self.signer = None
+        self.adb_path = 'adb'  # Default to 'adb' in PATH
+        self._verify_adb_path()
         self.device_cache = {}
         self.app_cache = {}
         self.last_device_check = 0
@@ -34,7 +38,6 @@ class ADBUtils:
         """Initialize ADB client with authentication"""
         try:
             # Set up authentication
-            self.signer = None
             key_path = os.path.expanduser('~/.android/adbkey')
             if os.path.exists(key_path):
                 with open(key_path, 'rb') as f:
@@ -52,104 +55,107 @@ class ADBUtils:
             self.error_logger.log_error(f"Failed to initialize ADB client: {str(e)}", 
                                     ErrorCode.ADB_SERVER_NOT_RUNNING)
             
-    def _find_adb(self) -> str:
-        """Find ADB executable path with enhanced search"""
-        # Try environment variable first
-        android_home = os.getenv('ANDROID_HOME') or os.getenv('ANDROID_SDK_ROOT')
-        if android_home:
-            platform_tools = os.path.join(android_home, 'platform-tools')
-            adb_path = os.path.join(platform_tools, 'adb.exe' if sys.platform == 'win32' else 'adb')
-            if os.path.exists(adb_path):
-                self.debug_logger.log_debug(f"Found ADB in Android SDK: {adb_path}", "adb", "info")
-                return adb_path
-                
-        # Try common install locations
-        common_paths = [
-            r"C:\Program Files (x86)\Android\android-sdk\platform-tools\adb.exe",
-            r"C:\Program Files\Android\android-sdk\platform-tools\adb.exe",
-            os.path.expanduser("~/AppData/Local/Android/Sdk/platform-tools/adb.exe"),
-            "/usr/local/bin/adb",
-            "/usr/bin/adb"
-        ]
-        
-        for path in common_paths:
-            if os.path.exists(path):
-                self.debug_logger.log_debug(f"Found ADB in common location: {path}", "adb", "info")
-                return path
-                
-        # Try PATH
-        try:
-            if sys.platform == 'win32':
-                result = subprocess.run(['where', 'adb'], capture_output=True, text=True)
-            else:
-                result = subprocess.run(['which', 'adb'], capture_output=True, text=True)
-                
-            if result.returncode == 0:
-                path = result.stdout.strip().split('\n')[0]
-                self.debug_logger.log_debug(f"Found ADB in PATH: {path}", "adb", "info")
-                return path
-                
-        except Exception as e:
-            self.error_logger.log_error(f"Failed to search PATH for ADB: {str(e)}")
+    def _verify_adb_path(self) -> None:
+        """Verify ADB executable exists in PATH"""
+        if shutil.which(self.adb_path):
+            self.debug_logger.log_debug(
+                f"ADB executable found at: {shutil.which(self.adb_path)}", 
+                "adb", 
+                "info"
+            )
+            return
             
-        raise FileNotFoundError("Could not find ADB executable. Please ensure Android SDK platform-tools are installed and in your PATH.")
+        # Try common environment variables
+        for env_var in ['ANDROID_HOME', 'ANDROID_SDK_ROOT']:
+            if env_var in os.environ:
+                platform_tools = os.path.join(os.environ[env_var], 'platform-tools', 'adb')
+                if os.path.exists(platform_tools):
+                    self.adb_path = platform_tools
+                    self.debug_logger.log_debug(
+                        f"ADB executable found at: {platform_tools}", 
+                        "adb", 
+                        "info"
+                    )
+                    return
+                    
+        error_msg = (
+            "ADB executable not found in PATH or Android SDK. "
+            "Please ensure Android SDK Platform Tools are installed "
+            "and the directory containing adb.exe is added to your PATH."
+        )
+        self.error_logger.log_error(error_msg)
+        raise FileNotFoundError(error_msg)
         
     @retry(tries=3, delay=1, backoff=2)
-    def _run_adb(self, args: List[str], timeout: int = 10, use_shell: bool = False) -> Tuple[bool, str]:
-        """Run an ADB command with retry logic"""
+    def _run_adb(self, args: List[str], timeout: int = 15) -> Tuple[bool, str]:
+        """Run an ADB command with retry logic and enhanced error handling"""
+        command = [self.adb_path] + args
+        cmd_str = ' '.join(command)
+        
         try:
-            if use_shell:
-                # Use adb_shell for direct device communication
-                device = self._get_device()
-                if not device:
-                    return False, "No device connected"
-                    
-                result = device.shell(' '.join(args))
-                return True, result
+            self.debug_logger.log_debug(f"Running ADB command: {cmd_str}", "adb", "debug")
+            
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout
+            )
+            
+            if result.returncode != 0:
+                error_msg = f"ADB command failed (code {result.returncode}): {result.stderr.strip()}"
+                self.error_logger.log_error(error_msg)
+                return False, error_msg
                 
-            else:
-                # Handle shell commands with pipes
-                cmd = [self.adb_path]
-                for arg in args:
-                    cmd.append(arg)
+            self.debug_logger.log_debug(
+                f"ADB command successful: {result.stdout.strip()[:100]}...", 
+                "adb", 
+                "debug"
+            )
+            return True, result.stdout.strip()
+            
+        except subprocess.TimeoutExpired:
+            error_msg = f"ADB command timed out after {timeout}s: {cmd_str}"
+            self.error_logger.log_error(error_msg)
+            return False, error_msg
+            
+        except Exception as e:
+            error_msg = f"ADB command failed unexpectedly: {str(e)}"
+            self.error_logger.log_error(error_msg)
+            return False, error_msg
+            
+    def _run_shell_command(self, args: List[str], timeout: int = 15) -> Tuple[bool, str]:
+        """Run an ADB shell command safely handling pipes and redirects"""
+        # For shell commands that need pipe operations
+        if any(x in ' '.join(args) for x in ['|', '>', '<', '&']):
+            shell_cmd = f"{self.adb_path} shell " + ' '.join(args)
+            try:
+                self.debug_logger.log_debug(f"Running shell command: {shell_cmd}", "adb", "debug")
                 
-                # Check if we need to use shell mode
-                needs_shell = any(x in ' '.join(args) for x in ['|', '>', '<', '&'])
-                
-                if needs_shell:
-                    # Use shell mode for commands with special operators
-                    result = subprocess.run(
-                        ' '.join(cmd),
-                        shell=True,
-                        capture_output=True,
-                        text=True,
-                        timeout=timeout
-                    )
-                else:
-                    # Regular ADB command
-                    result = subprocess.run(
-                        cmd,
-                        shell=False,
-                        capture_output=True,
-                        text=True,
-                        timeout=timeout
-                    )
+                result = subprocess.run(
+                    shell_cmd,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout
+                )
                 
                 if result.returncode != 0:
-                    error = result.stderr.strip() or "Unknown error"
-                    self.error_logger.log_error(f"ADB command failed: {error}")
-                    return False, error
+                    error_msg = f"Shell command failed: {result.stderr.strip()}"
+                    self.error_logger.log_error(error_msg)
+                    return False, error_msg
                     
                 return True, result.stdout.strip()
                 
-        except subprocess.TimeoutExpired:
-            self.error_logger.log_error(f"ADB command timed out: {' '.join(args)}")
-            return False, "Command timed out"
-            
-        except Exception as e:
-            self.error_logger.log_error(f"ADB command failed: {str(e)}")
-            return False, str(e)
-            
+            except Exception as e:
+                error_msg = f"Shell command failed: {str(e)}"
+                self.error_logger.log_error(error_msg)
+                return False, error_msg
+                
+        # For regular shell commands
+        return self._run_adb(['shell'] + args, timeout)
+        
     def _get_device(self) -> Optional[AdbDeviceUsb]:
         """Get connected ADB device"""
         try:
@@ -438,46 +444,84 @@ class ADBUtils:
             return None
 
     def get_connected_devices(self) -> List[Dict[str, str]]:
-        """Get list of connected devices"""
+        """Get list of connected devices with enhanced error handling"""
+        devices = []
         try:
             success, output = self._run_adb(['devices', '-l'])
             if not success:
+                self.error_logger.log_error(
+                    f"Failed to get device list: {output}",
+                    ErrorCode.DEVICE_NOT_CONNECTED
+                )
                 return []
                 
-            # Parse output
-            devices = []
-            lines = output.strip().split('\n')
+            lines = output.strip().splitlines()
             
-            # Skip first line (List of devices attached)
+            # Verify header line
+            if not lines or not lines[0].startswith("List of devices attached"):
+                self.error_logger.log_error(
+                    "Invalid ADB devices output format",
+                    ErrorCode.ADB_COMMAND_FAILED
+                )
+                return []
+                
+            # Process device lines
             for line in lines[1:]:
                 line = line.strip()
                 if not line:
                     continue
                     
-                # Basic device info
-                parts = line.split(None, 2)  # Split on whitespace, max 2 splits
-                if len(parts) < 2:
-                    continue
+                # Split on whitespace for extended info
+                parts = line.split(None, 2)  # Max 2 splits to handle device info
+                
+                if len(parts) >= 2:
+                    device_id = parts[0]
+                    state = parts[1]
                     
-                device_id = parts[0]
-                state = parts[1]
-                
-                # Parse additional info if available
-                info = {'id': device_id, 'state': state}
-                if len(parts) > 2 and state == 'device':
-                    # Parse key:value pairs
-                    for item in parts[2].split():
-                        if ':' in item:
-                            key, value = item.split(':', 1)
-                            info[key] = value
-                            
-                devices.append(info)
-                
-            return devices
-            
+                    device_info = {
+                        'id': device_id,
+                        'state': state
+                    }
+                    
+                    # Parse additional device info if available
+                    if len(parts) > 2 and state == 'device':
+                        for item in parts[2].split():
+                            if ':' in item:
+                                key, value = item.split(':', 1)
+                                device_info[key] = value
+                                
+                        self.debug_logger.log_debug(
+                            f"Found device: {device_id} ({device_info.get('model', 'Unknown')})",
+                            "device",
+                            "info"
+                        )
+                    else:
+                        self.debug_logger.log_debug(
+                            f"Device in non-ready state: {device_id} ({state})",
+                            "device",
+                            "warning"
+                        )
+                        
+                    devices.append(device_info)
+                else:
+                    self.error_logger.log_error(
+                        f"Unexpected format in device list: '{line}'",
+                        ErrorCode.ADB_COMMAND_FAILED
+                    )
+                    
         except Exception as e:
-            self.error_logger.log_error(f"Failed to get connected devices: {str(e)}")
+            self.error_logger.log_error(
+                f"Failed to get device list: {str(e)}",
+                ErrorCode.ADB_COMMAND_FAILED
+            )
             return []
+            
+        self.debug_logger.log_debug(
+            f"Found {len(devices)} device(s)",
+            "device",
+            "info"
+        )
+        return devices
 
     def check_adb_status(self) -> bool:
         """Check if ADB server is running and device is connected"""

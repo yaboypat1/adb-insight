@@ -1,0 +1,8 @@
+LICENSE
+README.md
+setup.py
+adb_insight.egg-info/PKG-INFO
+adb_insight.egg-info/SOURCES.txt
+adb_insight.egg-info/dependency_links.txt
+adb_insight.egg-info/requires.txt
+adb_insight.egg-info/top_level.txt

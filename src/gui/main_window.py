@@ -1,13 +1,14 @@
-from PySide6.QtWidgets import (
+from PyQt6.QtWidgets import (
     QMainWindow, QTabWidget, QWidget, QVBoxLayout, QPushButton,
     QTextEdit, QHBoxLayout, QLineEdit, QLabel, QMessageBox,
     QDialog, QDialogButtonBox, QProgressBar, QProgressDialog,
     QInputDialog, QGroupBox, QScrollArea
 )
-from PySide6.QtGui import QPixmap
-from PySide6.QtCore import Qt, QProcess, QTimer
+from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt, QProcess, QTimer
 from src.utils.adb_utils import ADBUtils
 from src.utils.error_utils import ErrorLogger
+from src.utils.debug_utils import DebugLogger
 from .app_tab import AppTab
 
 class PairingDialog(QDialog):
@@ -74,15 +75,16 @@ class NetworkScanDialog(QDialog):
         QTimer.singleShot(100, self.start_scan)
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, debug_logger: DebugLogger, error_logger: ErrorLogger):
         """Initialize main window"""
         super().__init__()
         self.setWindowTitle("ADB Insight")
         self.setMinimumSize(800, 600)
         
         # Initialize utils
-        self.error_logger = ErrorLogger()
-        self.adb_utils = ADBUtils()
+        self.debug_logger = debug_logger
+        self.error_logger = error_logger
+        self.adb_utils = ADBUtils(debug_logger, error_logger)
         
         # Create central widget and layout
         central_widget = QWidget()
@@ -94,7 +96,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.tab_widget)
         
         # Add tabs
-        self.app_tab = AppTab()
+        self.app_tab = AppTab(debug_logger, error_logger)
         self.tab_widget.addTab(self.app_tab, "Apps")
         
         # Create status bar

@@ -2,160 +2,73 @@
 
 ## Critical Issues
 
-### 1. Device Connection Status Confusion
-- **Description**: Debug tab shows contradictory device connection status
-  - Shows "No device connected" warning while simultaneously displaying device info
-  - Device connection state not properly synchronized across components
-  - Status indicators sometimes out of sync with actual device state
+### 1. ADB Command Execution Issues
+- **Description**: Problems with ADB command execution
+  - Shell commands with pipes failing with "too many values to unpack (expected 3)" error
+  - Device state checking errors in `get_device_state()`
+  - Command execution failing when using grep or other shell operators
 - **Components Affected**: 
-  - `AppUtils._verify_adb()`
-  - `AppUtils._verify_device()`
-  - `AppTab._on_device_state_changed()`
-  - `MainWindow` status handling
+  - `src/utils/adb_utils.py:_run_adb()` - Line ~97-131
+  - `src/utils/adb_utils.py:get_device_state()` - Line ~162-216
+  - `src/utils/app_utils.py:_verify_device()` - Line ~522-541
+  - `src/gui/app_tab.py:_check_adb_status()` - Line ~383-392
 - **Root Causes**:
-  - Race condition between device checks
-  - Asynchronous updates not properly coordinated
-  - Cached device state not invalidated correctly
+  - Shell command parsing issues in `_run_adb()` when using pipe operators (|, >, <)
+  - Improper handling of subprocess.run() with shell=True
+  - Device state synchronization problems between ADBUtils and AppUtils
+  - Error code: DEVICE_NOT_CONNECTED when device state check fails
+  - Error code: ADB_SERVER_NOT_RUNNING when ADB server fails to start
 - **Impact**:
-  - Confusing user experience
-  - Unreliable device status information
-  - Potential app functionality issues
-- **Attempted Fixes**:
-  - Added device state change signal
-  - Improved status message handling
-  - Added device serial display
-- **Current Status**: Still Active
-  - Issue persists despite recent changes
-  - Needs comprehensive review of device state management
+  - Unreliable device detection (Error logs in debug_logger with category="device")
+  - Failed app list refreshes (Error code: APP_LIST_REFRESH_FAILED)
+  - Inconsistent device status display in UI
+  - Command timeouts after 10 seconds
+- **Current Status**: Active
+  - Working on fixing shell command execution in `src/utils/adb_utils.py`
+  - Error logs can be found in `logs/adb_error.log`
+  - Stack traces show issues in subprocess.run() calls
 
-### 2. CPU Usage Information Problems
-- **Description**: CPU usage data is unreliable
-  - Sometimes shows incomplete information
-  - Values may be inaccurate or missing
-  - Updates are inconsistent
+### 2. Device Connection Status Issues
+- **Description**: Device connection state not properly tracked
+  - Connection status updates unreliable with error "Error checking device status"
+  - Multiple device handling issues when more than one device is connected
+  - State changes not properly propagated through signal system
 - **Components Affected**:
-  - `AppUtils.get_app_analytics()`
-  - `AppUtils._run_adb_command()`
-  - `AppTab._on_app_selected()`
-  - `AppTab._refresh_analytics()`
+  - `src/utils/app_utils.py:_verify_device()` - Line ~522-541
+  - `src/utils/adb_utils.py:get_connected_devices()` - Line ~443-483
+  - `src/gui/app_tab.py:_on_device_state_changed()` - Line ~130-169
 - **Root Causes**:
-  - ADB top command parsing issues
-  - Process state changes during data collection
-  - Command execution timing problems
+  - Asynchronous state updates not coordinated between threads
+  - Device state caching issues (cache timeout: 5 seconds)
+  - Error handling gaps in device state transitions
+  - Error code: MULTIPLE_DEVICES when multiple devices detected
+  - Error code: DEVICE_STATE_MISMATCH when state is inconsistent
 - **Impact**:
-  - Inaccurate performance monitoring
-  - Missing CPU data for some apps
-  - Inconsistent analytics display
-- **Attempted Fixes**:
-  - Improved top command parsing
-  - Added error handling
-  - Enhanced data formatting
-- **Current Status**: Still Active
-  - Core issues remain unresolved
-  - Needs better approach to CPU monitoring
+  - Inconsistent UI state in AppTab
+  - Failed operations due to device state mismatch
+  - Poor user experience with delayed updates
+  - Errors logged in `logs/device_state.log`
+- **Current Status**: Active
+  - Implementing improved state management in ADBUtils
+  - Adding comprehensive error logging
+  - Error tracking system records in `logs/error_tracking.db`
 
-### 3. App List and Cache Issues
-- **Description**: App list management problems
-  - List doesn't always update when apps installed/uninstalled
-  - Cache may show stale data
-  - System apps filtering inconsistent
-- **Components Affected**:
-  - `AppUtils.get_installed_apps()`
-  - `AppUtils._cache_apps()`
-  - `AppTab.refresh_app_list()`
-  - `AppTab._filter_apps()`
-- **Root Causes**:
-  - Cache invalidation not properly handled
-  - Package manager events missed
-  - Race conditions in list updates
-- **Impact**:
-  - Outdated app information
-  - Missing newly installed apps
-  - Incorrect system app filtering
-- **Attempted Fixes**:
-  - Added auto-refresh triggers
-  - Improved cache management
-  - Enhanced error handling
-- **Current Status**: Still Active
-  - Cache issues persist
-  - List updates unreliable
+## Bug Report Template
 
-### 4. Memory Analysis Problems
-- **Description**: Memory information inconsistencies
-  - Memory usage values sometimes incorrect
-  - Detailed breakdown missing or incomplete
-  - Updates not real-time
-- **Components Affected**:
-  - `AppUtils.get_memory_info()`
-  - `AppUtils.get_app_analytics()`
-  - `AppTab._update_memory_display()`
-- **Root Causes**:
-  - ADB dumpsys parsing issues
-  - Memory calculation errors
-  - Update timing problems
-- **Impact**:
-  - Unreliable memory monitoring
-  - Missing memory breakdown
-  - Inaccurate resource usage display
-- **Attempted Fixes**:
-  - Enhanced memory data parsing
-  - Added detailed breakdowns
-  - Improved error handling
-- **Current Status**: Still Active
-  - Core memory tracking issues remain
-  - Needs complete overhaul
+When reporting bugs, please include:
 
-## Attempted Solutions That Failed
-
-### 1. Device State Management
-- **Attempt**: Using device state change signal
-- **Why It Failed**: 
-  - Signal emissions not properly synchronized
-  - Multiple components updating state independently
-  - Race conditions not fully addressed
-
-### 2. CPU Usage Monitoring
-- **Attempt**: Enhanced top command parsing
-- **Why It Failed**:
-  - Command output format varies by Android version
-  - Process state changes during collection
-  - Background process handling issues
-
-### 3. App List Updates
-- **Attempt**: Auto-refresh mechanism
-- **Why It Failed**:
-  - Missing package manager events
-  - Cache invalidation timing issues
-  - Performance impact of frequent updates
-
-## Next Steps
-
-### 1. Device Connection
-- Implement proper state machine for device status
-- Add connection history tracking
-- Create unified device state manager
-
-### 2. Performance Monitoring
-- Switch to native ADB protocol for data collection
-- Implement real-time monitoring service
-- Add historical data tracking
-
-### 3. App Management
-- Implement package manager event listeners
-- Create robust caching system
-- Add background update service
-
-### 4. Memory Analysis
-- Develop custom memory profiler
-- Add heap analysis tools
-- Implement memory leak detection
-
-## Issue Reporting Guidelines
-
-When reporting issues, please provide:
-1. Exact steps to reproduce
-2. Android device model and version
-3. ADB version being used
-4. Full error messages and logs
-5. Screenshots if applicable
-6. Recent device connection history
+1. Steps to reproduce
+2. Expected behavior
+3. Actual behavior
+4. ADB version being used
+5. Full error messages and logs from:
+   - `logs/adb_error.log`
+   - `logs/device_state.log`
+   - `logs/app_debug.log`
+6. Screenshots if applicable
+7. Recent device connection history from `logs/connection_history.db`
+8. System Information:
+   - Python version
+   - Operating System
+   - ADB version (`adb version`)
+   - Device information (`adb devices -l`)

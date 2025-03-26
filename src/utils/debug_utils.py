@@ -1,10 +1,12 @@
 from datetime import datetime
 from queue import Queue
-from typing import Dict, List, Optional, Callable
+from typing import Dict, List, Optional, Callable, Any
 from dataclasses import dataclass
+from enum import Enum
 import threading
 import logging
 import os
+from pathlib import Path
 
 @dataclass
 class DebugEntry:
@@ -14,6 +16,23 @@ class DebugEntry:
     details: str
     duration: float
     package_name: Optional[str] = None
+
+class LogLevel(Enum):
+    """Log levels for debug messages"""
+    DEBUG = "DEBUG"
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+
+class LogCategory(Enum):
+    """Categories for debug messages"""
+    ADB = "adb"
+    DEVICE = "device"
+    APP = "app"
+    MEMORY = "memory"
+    ANALYTICS = "analytics"
+    UI = "ui"
+    SYSTEM = "system"
 
 class DebugLogger:
     _instance = None
@@ -46,12 +65,27 @@ class DebugLogger:
         file_handler = logging.FileHandler(log_file)
         file_handler.setLevel(logging.DEBUG)
         
-        # Format
-        formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
-        file_handler.setFormatter(formatter)
+        # Console handler for important messages
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
         
+        # Formatters
+        file_formatter = logging.Formatter(
+            '%(asctime)s - %(levelname)s - [%(category)s] %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        console_formatter = logging.Formatter(
+            '%(asctime)s - %(levelname)s - %(message)s',
+            datefmt='%H:%M:%S'
+        )
+        
+        file_handler.setFormatter(file_formatter)
+        console_handler.setFormatter(console_formatter)
+        
+        # Add handlers
         self.logger.addHandler(file_handler)
-    
+        self.logger.addHandler(console_handler)
+        
     def _start_queue_processor(self):
         def process_queue():
             while True:
@@ -106,29 +140,58 @@ class DebugLogger:
             self.logger.warning(f"{operation}: {details}")
         else:
             self.logger.info(f"{operation}: {details}")
-    
-    def log_debug(self, message: str, operation: str = '', status: str = 'info', **kwargs):
-        """Log a debug message"""
-        entry = {
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'),
-            'operation': operation,
-            'status': status,
-            'message': message,
-            **kwargs
-        }
-        
-        # Log to file
-        if status == 'error':
-            self.logger.error(f"{operation}: {message}")
-        elif status == 'warning':
-            self.logger.warning(f"{operation}: {message}")
-        else:
-            self.logger.info(f"{operation}: {message}")
             
-        # Notify listeners
+    def log_debug(self, message: str, category: str = "general", level: str = "debug",
+                extra: Optional[Dict[str, Any]] = None) -> None:
+        """Log a debug message with category and optional extra info"""
+        try:
+            # Validate and convert category
+            try:
+                cat = LogCategory[category.upper()]
+            except KeyError:
+                cat = LogCategory.SYSTEM
+                
+            # Validate and convert level
+            try:
+                lvl = LogLevel[level.upper()]
+            except KeyError:
+                lvl = LogLevel.DEBUG
+                
+            # Format extra info
+            if extra:
+                extra_str = " | " + " | ".join(f"{k}={v}" for k, v in extra.items())
+            else:
+                extra_str = ""
+                
+            # Create log record
+            record = self.logger.makeRecord(
+                'debug_logger',
+                logging.DEBUG,
+                __file__,
+                0,
+                message + extra_str,
+                None,
+                None,
+                func=None,
+                extra={'category': cat.value}
+            )
+            
+            # Log the message
+            self.logger.handle(record)
+            
+            # Notify listeners
+            self._notify_listeners(message, lvl, cat)
+            
+        except Exception as e:
+            # Fallback logging
+            print(f"Debug logging failed: {str(e)}")
+            print(f"Original message: {message}")
+            
+    def _notify_listeners(self, message: str, level: LogLevel, category: LogCategory) -> None:
+        """Notify all listeners of a new debug message"""
         for listener in self.listeners:
             try:
-                listener(entry)
+                listener(message, level, category)
             except Exception as e:
                 self.logger.error(f"Error in debug listener: {str(e)}")
                 
@@ -163,3 +226,80 @@ class DebugLogger:
         """Shutdown the debug logger"""
         self.entry_queue.put(None)  # Signal queue processor to stop
         self.queue_thread.join(timeout=1.0)  # Wait for thread to finish
+        
+    def get_recent_logs(self, count: int = 50, level: Optional[str] = None,
+                     category: Optional[str] = None) -> List[str]:
+        """Get recent debug logs with optional filtering"""
+        try:
+            log_file = os.path.join(self.log_dir, 'debug.log')
+            if not os.path.exists(log_file):
+                return []
+                
+            with open(log_file, 'r') as f:
+                lines = f.readlines()
+                
+            # Apply filters
+            filtered = []
+            for line in reversed(lines):
+                if len(filtered) >= count:
+                    break
+                    
+                if level and f" - {level.upper()} - " not in line:
+                    continue
+                    
+                if category and f"[{category.upper()}]" not in line:
+                    continue
+                    
+                filtered.append(line.strip())
+                
+            return list(reversed(filtered))
+            
+        except Exception as e:
+            print(f"Failed to read debug log: {str(e)}")
+            return []
+            
+    def clear_log(self) -> None:
+        """Clear the debug log file"""
+        try:
+            log_file = os.path.join(self.log_dir, 'debug.log')
+            if os.path.exists(log_file):
+                with open(log_file, 'w') as f:
+                    f.write('')
+                    
+        except Exception as e:
+            print(f"Failed to clear debug log: {str(e)}")
+            
+    def get_log_stats(self) -> Dict[str, int]:
+        """Get statistics about logged messages"""
+        try:
+            stats = {
+                'total': 0,
+                'debug': 0,
+                'info': 0,
+                'warning': 0,
+                'error': 0
+            }
+            
+            log_file = os.path.join(self.log_dir, 'debug.log')
+            if not os.path.exists(log_file):
+                return stats
+                
+            with open(log_file, 'r') as f:
+                for line in f:
+                    stats['total'] += 1
+                    for level in ['DEBUG', 'INFO', 'WARNING', 'ERROR']:
+                        if f" - {level} - " in line:
+                            stats[level.lower()] += 1
+                            break
+                            
+            return stats
+            
+        except Exception as e:
+            print(f"Failed to get log stats: {str(e)}")
+            return {
+                'total': 0,
+                'debug': 0,
+                'info': 0,
+                'warning': 0,
+                'error': 0
+            }

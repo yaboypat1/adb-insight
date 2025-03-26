@@ -8,7 +8,22 @@ from .debug_utils import DebugLogger
 import concurrent.futures
 import time
 import socket
-from PySide6.QtCore import Signal, QObject
+from PyQt6.QtCore import pyqtSignal, QObject
+import os
+import sys
+import subprocess
+import time
+from typing import List, Dict, Optional, Tuple
+from datetime import datetime
+from pathlib import Path
+from adb_shell.adb_device import AdbDeviceUsb
+from adb.adb_commands import AdbCommands
+from retry import retry
+import psutil
+import humanize
+from .error_utils import ErrorLogger, ErrorCode, AppError, DeviceError, MemoryError
+from .debug_utils import DebugLogger
+from .adb_utils import ADBUtils
 
 class AppInfo(NamedTuple):
     package_name: str
@@ -32,15 +47,15 @@ class AppUtils(QObject):
     """Utility class for app management"""
     
     # Signals
-    device_state_changed = Signal(bool)  # True if connected, False if disconnected
+    device_state_changed = pyqtSignal(bool)  # True if connected, False if disconnected
     
-    def __init__(self):
+    def __init__(self, debug_logger: DebugLogger, error_logger: ErrorLogger):
         """Initialize AppUtils"""
         super().__init__()
         
-        # Initialize loggers first
-        self.error_logger = ErrorLogger()
-        self.debug_logger = DebugLogger()
+        # Store loggers
+        self.debug_logger = debug_logger
+        self.error_logger = error_logger
         
         # Initialize state
         self.adb_ready = False
@@ -53,6 +68,8 @@ class AppUtils(QObject):
         self._last_analytics_refresh = {}  # Last refresh time per package
         self._device_cache = None  # Cache for device info
         self._last_device_refresh = 0  # Last time device was checked
+        self.current_device = None
+        self.include_system_apps = False
         
         # Start ADB server without requiring device
         try:
@@ -65,7 +82,7 @@ class AppUtils(QObject):
             self.debug_logger.log_debug(f"Failed to start ADB server: {str(e)}", "init", "warning")
             
         # Initial device check
-        self._verify_adb(raise_on_no_device=False)
+        self._verify_device(raise_on_no_device=False)
             
     def _log_operation(self, operation: str, package_name: str = '') -> callable:
         """Create a log entry for an operation"""
@@ -87,113 +104,39 @@ class AppUtils(QObject):
         """Check if cache should be refreshed based on timeout"""
         return time.time() - last_refresh > timeout
         
-    def _verify_device(self) -> bool:
-        """Verify device connection with caching"""
-        current_time = time.time()
-        
-        # Use cached result if available and recent (5 seconds)
-        if self._device_cache is not None and (current_time - self._last_device_refresh) < 5:
-            return self._device_cache
-            
+    def _verify_device(self, raise_on_no_device=True):
+        """Verify a device is connected"""
         try:
-            devices = subprocess.run(
-                ['adb', 'devices'], 
-                check=True, 
-                capture_output=True, 
-                text=True
-            ).stdout.strip().split('\n')[1:]
+            devices = subprocess.run(['adb', 'devices'], 
+                                capture_output=True, 
+                                text=True,
+                                check=True).stdout.strip().split('\n')[1:]
             
             # Filter out empty lines and unauthorized devices
             devices = [d for d in devices if d and 'unauthorized' not in d]
             
-            # Update cache
-            self._device_cache = len(devices) > 0
-            self._last_device_refresh = current_time
-            
-            return self._device_cache
+            if not devices:
+                self.debug_logger.log_debug("No devices connected", "verify_device", "warning")
+                return False
+                
+            # Use the first connected device
+            device = next((d for d in devices if 'device' in d), None)
+            if not device:
+                self.debug_logger.log_debug("No device in ready state", "verify_device", "warning")
+                return False
+                
+            self.current_device = device
+            self.debug_logger.log_debug(
+                f"Using device: {device}", 
+                "verify_device", 
+                "info"
+            )
+            return True
             
         except Exception as e:
-            self.error_logger.log_error(f"Failed to verify device: {str(e)}")
+            self.debug_logger.log_debug(f"Device verification failed: {str(e)}", "verify_device", "error")
             return False
             
-    def _verify_adb(self, raise_on_no_device=True):
-        """Verify ADB is available and check device status"""
-        current_time = time.time()
-        
-        # Only check every 3 seconds
-        if current_time - self.last_check < 3:
-            if not self.adb_ready and raise_on_no_device:
-                self.debug_logger.log_debug("No device connected", "verify_adb", "warning")
-                raise Exception("No device connected")
-            return self.adb_ready
-            
-        self.last_check = current_time
-        was_ready = self.adb_ready
-        
-        try:
-            # Check for devices
-            result = subprocess.run(['adb', 'devices'], 
-                                capture_output=True, 
-                                text=True,
-                                check=True)
-            
-            # Parse device list (more carefully)
-            lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
-            devices = []
-            
-            for line in lines[1:]:  # Skip first line (header)
-                if '\t' in line:
-                    serial, state = line.split('\t')
-                    if state == 'device':
-                        devices.append(serial)
-                        
-            device_connected = len(devices) > 0
-            
-            # Update state
-            self.adb_ready = device_connected
-            
-            # Log appropriate message
-            if device_connected:
-                self.debug_logger.log_debug(f"Device connected: {devices[0]}", "verify_adb", "success")
-            else:
-                self.debug_logger.log_debug("No device connected", "verify_adb", "warning")
-                
-            # Emit signal if state changed
-            if was_ready != self.adb_ready:
-                self.device_state_changed.emit(self.adb_ready)
-                
-            # Handle no device case
-            if not device_connected and raise_on_no_device:
-                raise Exception("No device connected")
-                
-            return device_connected
-            
-        except subprocess.CalledProcessError as e:
-            self.adb_ready = False
-            error_msg = f"ADB command failed: {e.stderr}"
-            self.debug_logger.log_debug(error_msg, "verify_adb", "warning")
-            
-            # Emit signal if state changed
-            if was_ready:
-                self.device_state_changed.emit(False)
-                
-            if raise_on_no_device:
-                raise Exception(error_msg)
-            return False
-            
-        except Exception as e:
-            self.adb_ready = False
-            error_msg = str(e)
-            self.debug_logger.log_debug(error_msg, "verify_adb", "warning")
-            
-            # Emit signal if state changed
-            if was_ready:
-                self.device_state_changed.emit(False)
-                
-            if raise_on_no_device:
-                raise
-            return False
-                
     def _run_adb_command(self, command: List[str]) -> str:
         """Run an ADB command and return its output"""
         log_result = self._log_operation("adb_command", None)
@@ -209,91 +152,145 @@ class AppUtils(QObject):
             self.error_logger.log_error(error_msg)
             raise Exception(error_msg)
 
-    def get_installed_apps(self, system_apps: bool = False, force_refresh: bool = False) -> List[Dict[str, str]]:
-        """Get list of installed apps with their names"""
-        current_time = time.time()
-        
-        # Return cached results if available and not forced to refresh
-        if not force_refresh and self._app_cache and (current_time - self._last_app_refresh) < 30:
-            return self._app_cache
-            
-        # If no device and we have cache, return cache
-        if not self.adb_ready and self._app_cache:
-            self.debug_logger.log_debug("No device - using cached app list", "get_apps", "warning")
-            return self._app_cache
-            
-        log_result = self._log_operation("get_installed_apps")
+    def get_installed_apps(self, force_refresh=False) -> List[Dict[str, str]]:
+        """Get list of installed apps with caching"""
         try:
-            # Get package names
-            cmd = ['shell', 'pm', 'list', 'packages', '-f']
-            if not system_apps:
-                cmd.append('-3')  # Only third-party apps
+            # Check if we should use cache
+            current_time = time.time()
+            if not force_refresh and self._app_cache and (current_time - self._last_app_refresh) < 30:
+                self.debug_logger.log_debug("Using cached app list", "get_apps", "info")
+                return self._app_cache
                 
+            # Verify device
+            if not self._verify_device():
+                if self._app_cache:
+                    self.debug_logger.log_debug("No device, using cached apps", "get_apps", "warning")
+                    return self._app_cache
+                return []
+                
+            # Get all packages
+            cmd = ['shell', 'pm', 'list', 'packages', '-f', '-3']  # -3 for third-party apps
             output = self._run_adb_command(cmd)
             
+            if not output:
+                self.debug_logger.log_debug("No packages found", "get_apps", "warning")
+                return []
+                
             apps = []
             for line in output.splitlines():
-                if not line:
-                    continue
-                    
-                # Parse package path and name
-                match = re.match(r'package:(.+?)=(.+)', line)
-                if not match:
-                    continue
-                    
-                path, package = match.groups()
-                
-                # Get app label using aapt
                 try:
-                    name = package  # Default to package name
-                    dump_cmd = ['shell', 'dumpsys', 'package', package]
-                    dump_output = self._run_adb_command(dump_cmd)
+                    if not line.startswith('package:'):
+                        continue
+                        
+                    # Parse package line
+                    # Format: package:/data/app/com.example.app-hash/base.apk=com.example.app
+                    parts = line[8:].split('=')  # Remove 'package:' prefix
+                    if len(parts) != 2:
+                        continue
+                        
+                    path, package = parts
+                    path = path.strip()
+                    package = package.strip()
                     
-                    # Try to find the app name
-                    label_match = re.search(r'applicationInfo.*?labelRes=\d+\s+label="([^"]+)"', dump_output, re.DOTALL)
-                    if label_match:
-                        name = label_match.group(1)
-                    else:
-                        # Try alternate format
-                        alt_match = re.search(r'Application Label:\s*(.+)', dump_output)
-                        if alt_match:
-                            name = alt_match.group(1).strip()
-                            
-                    apps.append({
+                    # Get app name
+                    name = self._get_app_name(package)
+                    if not name:
+                        name = package.split('.')[-1].title()
+                    
+                    # Get app info
+                    info = {
                         'package': package,
                         'name': name,
                         'path': path,
-                        'system': system_apps
-                    })
+                        'system': False
+                    }
+                    
+                    apps.append(info)
                     
                 except Exception as e:
-                    self.debug_logger.log_debug(f"Failed to get name for {package}: {str(e)}", "get_apps", "warning")
-                    # Still add the app, just with package name
-                    apps.append({
-                        'package': package,
-                        'name': package,
-                        'path': path,
-                        'system': system_apps
-                    })
+                    self.debug_logger.log_debug(f"Error parsing package: {str(e)}", "get_apps", "warning")
+                    continue
                     
+            # Get system apps if requested
+            if self.include_system_apps:
+                cmd = ['shell', 'pm', 'list', 'packages', '-f', '-s']  # -s for system apps
+                output = self._run_adb_command(cmd)
+                
+                if output:
+                    for line in output.splitlines():
+                        try:
+                            if not line.startswith('package:'):
+                                continue
+                                
+                            parts = line[8:].split('=')
+                            if len(parts) != 2:
+                                continue
+                                
+                            path, package = parts
+                            path = path.strip()
+                            package = package.strip()
+                            
+                            # Skip already added apps
+                            if any(a['package'] == package for a in apps):
+                                continue
+                                
+                            name = self._get_app_name(package)
+                            if not name:
+                                name = package.split('.')[-1].title()
+                                
+                            info = {
+                                'package': package,
+                                'name': name,
+                                'path': path,
+                                'system': True
+                            }
+                            
+                            apps.append(info)
+                            
+                        except Exception as e:
+                            self.debug_logger.log_debug(f"Error parsing system package: {str(e)}", "get_apps", "warning")
+                            continue
+                            
             # Update cache
             self._app_cache = apps
             self._last_app_refresh = current_time
             
-            log_result("success", f"Found {len(apps)} apps")
+            self.debug_logger.log_debug(f"Found {len(apps)} apps", "get_apps", "info")
             return apps
             
         except Exception as e:
-            error_msg = f"Failed to get installed apps: {str(e)}"
-            self.debug_logger.log_debug(error_msg, "get_apps", "error")
-            
-            # Return cache if available
+            self.debug_logger.log_debug(f"Failed to get app list: {str(e)}", "get_apps", "error")
             if self._app_cache:
                 return self._app_cache
-                
-            # Otherwise return empty list
             return []
-
+            
+    def _get_app_name(self, package: str) -> Optional[str]:
+        """Get app name from package"""
+        try:
+            cmd = ['shell', 'dumpsys', 'package', package]
+            output = self._run_adb_command(cmd)
+            
+            if output:
+                # Try different patterns
+                patterns = [
+                    r'applicationInfo.*?labelRes=\d+\s+nonLocalizedLabel=([^\s]+)',
+                    r'Application Label:\s*([^\n]+)',
+                    r'labelRes=\d+\s+label="([^"]+)"'
+                ]
+                
+                for pattern in patterns:
+                    match = re.search(pattern, output)
+                    if match:
+                        name = match.group(1).strip()
+                        if name and name != package:
+                            return name
+                            
+            return None
+            
+        except Exception as e:
+            self.debug_logger.log_debug(f"Failed to get app name: {str(e)}", "app_name", "warning")
+            return None
+            
     def get_memory_info(self, package: str) -> Optional[Dict]:
         """Get memory info with caching"""
         current_time = time.time()
@@ -501,7 +498,7 @@ class AppUtils(QObject):
             
         self.last_check = current_time
         was_ready = self.adb_ready
-        self.adb_ready = self._verify_adb(raise_on_no_device=False)
+        self.adb_ready = self._verify_device(raise_on_no_device=False)
         
         # Log status change
         if was_ready != self.adb_ready:
@@ -511,3 +508,261 @@ class AppUtils(QObject):
                 self.debug_logger.log_operation("adb_status", "warning", "ADB connection lost")
         
         return self.adb_ready
+
+class EnhancedAppUtils:
+    """Enhanced utility class for app operations"""
+    
+    def __init__(self, debug_logger: DebugLogger, error_logger: ErrorLogger):
+        self.debug_logger = debug_logger
+        self.error_logger = error_logger
+        self.adb_utils = ADBUtils(debug_logger, error_logger)
+        self.app_cache = {}
+        self.last_refresh = 0
+        self.cache_timeout = 5  # seconds
+        
+    def _verify_device(self) -> bool:
+        """Verify device connection with enhanced error handling"""
+        try:
+            devices = self.adb_utils.get_connected_devices()
+            if not devices:
+                self.error_logger.log_error(
+                    "No devices connected",
+                    ErrorCode.DEVICE_NOT_CONNECTED,
+                    {'state': 'no_device'}
+                )
+                return False
+                
+            # Check for exactly one device in proper state
+            connected_devices = [d for d in devices if d['state'] == 'device']
+            if not connected_devices:
+                self.error_logger.log_error(
+                    "No device in ready state",
+                    ErrorCode.DEVICE_NOT_CONNECTED,
+                    {'state': 'not_ready'}
+                )
+                return False
+            elif len(connected_devices) > 1:
+                self.error_logger.log_error(
+                    "Multiple devices connected",
+                    ErrorCode.MULTIPLE_DEVICES,
+                    {'count': len(connected_devices)}
+                )
+                return False
+                
+            # Device is ready
+            device = connected_devices[0]
+            self.debug_logger.log_debug(
+                f"Device {device['id']} connected ({device.get('model', 'Unknown')})", 
+                "device", 
+                "info"
+            )
+            return True
+            
+        except Exception as e:
+            self.error_logger.log_error(
+                f"Device verification error: {str(e)}",
+                ErrorCode.DEVICE_NOT_CONNECTED,
+                {'error': str(e)}
+            )
+            return False
+            
+    def get_installed_apps(self, force_refresh: bool = False) -> List[Dict]:
+        """Get installed apps with enhanced info"""
+        try:
+            return self.adb_utils.get_installed_apps(system_apps=False, force_refresh=force_refresh)
+            
+        except Exception as e:
+            self.error_logger.log_error(
+                f"Failed to get installed apps: {str(e)}",
+                ErrorCode.APP_NOT_FOUND,
+                {'force_refresh': force_refresh}
+            )
+            return []
+            
+    def get_app_info(self, package: str) -> Optional[Dict]:
+        """Get detailed app information"""
+        try:
+            if not self._verify_device():
+                return None
+                
+            # Get basic app info
+            apps = self.get_installed_apps()
+            app_info = next((app for app in apps if app['package'] == package), None)
+            if not app_info:
+                raise AppError(f"App {package} not found", ErrorCode.APP_NOT_FOUND)
+                
+            # Get memory info
+            memory = self.adb_utils.get_memory_info(package)
+            if memory:
+                app_info['memory'] = memory
+                
+            # Get analytics
+            analytics = self.adb_utils.get_app_analytics(package)
+            if analytics:
+                app_info.update(analytics)
+                
+            # Add human-readable sizes
+            if 'memory' in app_info:
+                app_info['memory_human'] = {
+                    k: humanize.naturalsize(v)
+                    for k, v in app_info['memory'].items()
+                }
+                
+            if 'disk_usage' in app_info:
+                app_info['disk_usage_human'] = humanize.naturalsize(app_info['disk_usage'])
+                
+            return app_info
+            
+        except AppError as e:
+            self.error_logger.log_error(
+                str(e),
+                e.code,
+                {'package': package}
+            )
+            return None
+            
+        except Exception as e:
+            self.error_logger.log_error(
+                f"Failed to get app info: {str(e)}",
+                ErrorCode.APP_NOT_FOUND,
+                {'package': package}
+            )
+            return None
+            
+    def monitor_app(self, package: str, duration: int = 60, interval: int = 1) -> List[Dict]:
+        """Monitor app performance over time"""
+        try:
+            if not self._verify_device():
+                return []
+                
+            metrics = []
+            start_time = time.time()
+            
+            while time.time() - start_time < duration:
+                try:
+                    # Get current metrics
+                    analytics = self.adb_utils.get_app_analytics(package)
+                    if analytics:
+                        analytics['timestamp'] = datetime.now().isoformat()
+                        metrics.append(analytics)
+                        
+                except Exception as e:
+                    self.error_logger.log_error(
+                        f"Failed to get metrics: {str(e)}",
+                        ErrorCode.ANALYTICS_CPU_FAILED,
+                        {'package': package, 'timestamp': datetime.now().isoformat()}
+                    )
+                    
+                time.sleep(interval)
+                
+            return metrics
+            
+        except Exception as e:
+            self.error_logger.log_error(
+                f"App monitoring failed: {str(e)}",
+                ErrorCode.ANALYTICS_CPU_FAILED,
+                {'package': package, 'duration': duration}
+            )
+            return []
+            
+    def analyze_memory_usage(self, package: str) -> Optional[Dict]:
+        """Analyze app memory usage patterns"""
+        try:
+            if not self._verify_device():
+                return None
+                
+            # Get current memory info
+            memory = self.adb_utils.get_memory_info(package)
+            if not memory:
+                raise MemoryError(f"Failed to get memory info for {package}")
+                
+            # Get device total memory
+            success, output = self.adb_utils._run_adb(['shell', 'cat', '/proc/meminfo'])
+            total_memory = None
+            if success:
+                for line in output.split('\n'):
+                    if 'MemTotal' in line:
+                        total_memory = int(line.split()[1]) * 1024  # Convert to bytes
+                        break
+                        
+            analysis = {
+                'current': memory,
+                'total_device_memory': total_memory,
+                'percentages': {}
+            }
+            
+            # Calculate percentages if we have total memory
+            if total_memory:
+                for key, value in memory.items():
+                    if isinstance(value, (int, float)):
+                        analysis['percentages'][key] = (value / total_memory) * 100
+                        
+            # Add human-readable values
+            analysis['human_readable'] = {
+                'current': {k: humanize.naturalsize(v) for k, v in memory.items()},
+                'total_device_memory': humanize.naturalsize(total_memory) if total_memory else None
+            }
+            
+            return analysis
+            
+        except MemoryError as e:
+            self.error_logger.log_error(
+                str(e),
+                e.code,
+                {'package': package}
+            )
+            return None
+            
+        except Exception as e:
+            self.error_logger.log_error(
+                f"Memory analysis failed: {str(e)}",
+                ErrorCode.MEMORY_READ_FAILED,
+                {'package': package}
+            )
+            return None
+            
+    def get_app_permissions(self, package: str) -> Optional[Dict]:
+        """Get detailed app permissions"""
+        try:
+            if not self._verify_device():
+                return None
+                
+            success, output = self.adb_utils._run_adb(['shell', 'dumpsys', 'package', package])
+            if not success:
+                raise AppError(f"Failed to get permissions for {package}")
+                
+            permissions = {
+                'granted': [],
+                'denied': [],
+                'requested': []
+            }
+            
+            current_section = None
+            for line in output.split('\n'):
+                if 'granted=true' in line:
+                    perm = line.split(':')[1].strip()
+                    permissions['granted'].append(perm)
+                elif 'granted=false' in line:
+                    perm = line.split(':')[1].strip()
+                    permissions['denied'].append(perm)
+                elif 'requested' in line and 'permission' in line:
+                    perm = line.split(':')[1].strip()
+                    permissions['requested'].append(perm)
+                    
+            return permissions
+            
+        except AppError as e:
+            self.error_logger.log_error(
+                str(e),
+                e.code,
+                {'package': package}
+            )
+            return None
+            
+        except Exception as e:
+            self.error_logger.log_error(
+                f"Failed to get app permissions: {str(e)}",
+                ErrorCode.APP_NOT_FOUND,
+                {'package': package}
+            )
+            return None

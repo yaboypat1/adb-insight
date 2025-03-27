@@ -1,34 +1,34 @@
-from PyQt5.QtCore import QObject, pyqtSignal, QThread
+from PyQt5.QtCore import QObject, pyqtSignal
 
 class Worker(QObject):
     """Worker class for running operations in a separate thread"""
+    started = pyqtSignal()
+    finished = pyqtSignal(object)
+    error = pyqtSignal(Exception)
+    progress = pyqtSignal(int)
     
-    finished = pyqtSignal()  # Signal when the operation is complete
-    error = pyqtSignal(str)  # Signal when an error occurs
-    result = pyqtSignal(object)  # Signal to return the result
-    
-    def __init__(self, function, *args, **kwargs):
+    def __init__(self):
         super().__init__()
-        self.function = function
-        self.args = args
-        self.kwargs = kwargs
-        self.thread = None  # Store thread reference
-        
+        self.work = None
+    
     def run(self):
-        """Execute the worker function"""
+        """Run the worker's task"""
         try:
-            result = self.function(*self.args, **self.kwargs)
-            self.result.emit(result)
+            self.started.emit()
+            result = self.work()
+            self.finished.emit(result)
         except Exception as e:
-            self.error.emit(str(e))
-        finally:
-            self.finished.emit()
+            self.error.emit(e)
+            
+    def update_progress(self, value: int):
+        """Update progress value"""
+        self.progress.emit(value)
 
 def create_thread_worker(function, *args, **kwargs):
     """Create a new worker thread for the given function"""
     thread = QThread()
-    worker = Worker(function, *args, **kwargs)
-    worker.thread = thread  # Store thread reference
+    worker = Worker()
+    worker.work = lambda: function(*args, **kwargs)
     worker.moveToThread(thread)
     
     # Connect thread start to worker run

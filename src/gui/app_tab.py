@@ -1,620 +1,267 @@
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
-                             QTabWidget, QLabel, QPushButton, QProgressBar,
-                             QCheckBox, QMessageBox, QScrollArea, QListWidgetItem,
-                             QGroupBox, QComboBox, QTextEdit)
-from PyQt6.QtGui import QBrush, QColor
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QObject, QRunnable, QThreadPool, Signal
-import humanize
-from datetime import datetime
-import concurrent.futures
-import threading
-import subprocess
+from typing import List, Dict, Optional
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
+    QLabel, QTableWidget, QTableWidgetItem, QHeaderView,
+    QProgressBar, QMessageBox, QMenu, QAction
+)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt5.QtGui import QCursor
 
-from ..utils.app_utils import AppUtils
-from ..utils.error_utils import ErrorLogger
-from ..utils.debug_utils import DebugLogger
 from ..utils.adb_utils import ADBUtils
-from ..utils.error_codes import ErrorCode
+from ..utils.debug_utils import DebugLogger
+from ..utils.error_utils import ErrorLogger, ErrorCode
 
-class AppListItem(QListWidgetItem):
-    """Custom list item for app list"""
-    def __init__(self, name: str, package: str):
-        super().__init__(name)
-        self.package_name = package
-        self.setData(Qt.UserRole, package)
-
-class AppTabSignals(QObject):
-    """Signals for AppTab worker threads"""
-    apps_ready = Signal(dict)  # {'user': user_apps, 'system': system_apps}
-    error = Signal(str)  # Error message
-    device_state = Signal(bool, str)  # Connected, Device ID
-    progress = Signal(str)  # Progress message
-
-class AppTabWorker(QRunnable):
-    """Worker thread for AppTab operations"""
+class AppTabWorker(QThread):
+    """Worker thread for fetching app data"""
     
-    def __init__(self, adb_utils, debug_logger, error_logger):
+    finished = pyqtSignal(list)  # Emits list of app info
+    error = pyqtSignal(str)  # Emits error message
+    progress = pyqtSignal(int)  # Emits progress value
+    
+    def __init__(self, adb_utils: ADBUtils):
         super().__init__()
+        self.adb_utils = adb_utils
+        self.include_system = False
+
+    def run(self):
+        """Fetch installed apps in background"""
+        try:
+            if not self.adb_utils.check_adb_status():
+                self.error.emit("No device connected")
+                return
+                
+            # Get list of packages
+            packages = self.adb_utils.get_installed_apps(self.include_system)
+            if not packages:
+                self.error.emit("No apps found")
+                return
+                
+            # Process each package
+            apps = []
+            total = len(packages)
+            
+            for i, package in enumerate(packages):
+                try:
+                    # Get app name
+                    name = self.adb_utils.get_app_name(package) or package
+                    
+                    # Get memory info
+                    memory = self.adb_utils.get_memory_info(package)
+                    total_memory = memory.get('total_pss', 0) if memory else 0
+                    
+                    apps.append({
+                        'name': name,
+                        'package': package,
+                        'memory': total_memory
+                    })
+                    
+                    # Update progress
+                    progress = int((i + 1) / total * 100)
+                    self.progress.emit(progress)
+                    
+                except Exception as e:
+                    continue  # Skip failed app
+                    
+            self.finished.emit(apps)
+            
+        except Exception as e:
+            self.error.emit(str(e))
+
+class AppTab(QWidget):
+    """Tab for managing installed applications"""
+    
+    def __init__(self, adb_utils: ADBUtils, debug_logger: DebugLogger, error_logger: ErrorLogger):
+        super().__init__()
+        
+        # Store utils
         self.adb_utils = adb_utils
         self.debug_logger = debug_logger
         self.error_logger = error_logger
-        self.signals = AppTabSignals()
         
-    def fetch_apps(self, user_only: bool = True, system_only: bool = False):
-        """Fetch installed apps in background"""
-        try:
-            self.signals.progress.emit("Fetching installed apps...")
-            
-            # Check device connection first
-            devices = self.adb_utils.get_connected_devices()
-            if not devices:
-                self.error_logger.log_error(
-                    "No device connected",
-                    ErrorCode.DEVICE_NOT_CONNECTED
-                )
-                self.signals.error.emit("No device connected. Please connect a device and try again.")
-                return
-                
-            ready_devices = [d for d in devices if d['state'] == 'device']
-            if not ready_devices:
-                self.error_logger.log_error(
-                    "Device not in ready state",
-                    ErrorCode.DEVICE_NOT_CONNECTED
-                )
-                self.signals.error.emit("Device not ready. Please check USB debugging is enabled.")
-                return
-                
-            # Fetch apps based on filters
-            apps = {}
-            if user_only or not system_only:
-                success, user_apps = self.adb_utils.get_installed_apps(system_apps=False)
-                if success:
-                    apps['user'] = user_apps
-                    self.debug_logger.log_debug(
-                        f"Found {len(user_apps)} user apps",
-                        "apps",
-                        "info"
-                    )
-                else:
-                    self.error_logger.log_error(
-                        "Failed to fetch user apps",
-                        ErrorCode.APP_LIST_REFRESH_FAILED
-                    )
-                    
-            if system_only or not user_only:
-                success, system_apps = self.adb_utils.get_installed_apps(system_apps=True)
-                if success:
-                    apps['system'] = system_apps
-                    self.debug_logger.log_debug(
-                        f"Found {len(system_apps)} system apps",
-                        "apps",
-                        "info"
-                    )
-                else:
-                    self.error_logger.log_error(
-                        "Failed to fetch system apps",
-                        ErrorCode.APP_LIST_REFRESH_FAILED
-                    )
-                    
-            if not apps:
-                self.signals.error.emit("Failed to fetch any apps. Check device connection and try again.")
-                return
-                
-            self.signals.apps_ready.emit(apps)
-            
-        except FileNotFoundError as e:
-            error_msg = "ADB not found. Please ensure Android SDK platform-tools are installed and in your PATH."
-            self.error_logger.log_error(error_msg, ErrorCode.ADB_NOT_FOUND)
-            self.signals.error.emit(error_msg)
-            
-        except subprocess.CalledProcessError as e:
-            error_msg = f"ADB command failed: {e.stderr.strip() if e.stderr else str(e)}"
-            self.error_logger.log_error(error_msg, ErrorCode.ADB_COMMAND_FAILED)
-            self.signals.error.emit(error_msg)
-            
-        except subprocess.TimeoutExpired:
-            error_msg = "Command timed out. Check device connection and try again."
-            self.error_logger.log_error(error_msg, ErrorCode.COMMAND_TIMEOUT)
-            self.signals.error.emit(error_msg)
-            
-        except Exception as e:
-            error_msg = f"Unexpected error: {str(e)}"
-            self.error_logger.log_error(error_msg, ErrorCode.UNKNOWN_ERROR)
-            self.signals.error.emit(error_msg)
-            
-class AppTab(QWidget):
-    update_ui_signal = pyqtSignal(object)
-    
-    def __init__(self, debug_logger: DebugLogger, error_logger: ErrorLogger):
-        """Initialize AppTab"""
-        super().__init__()
+        # Initialize worker
+        self.worker = None
         
-        # Store loggers
-        self.debug_logger = debug_logger
-        self.error_logger = error_logger
-        
-        # Initialize worker thread pool
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
-        self.workers = []
-        
-        # Connect UI update signal
-        self.update_ui_signal.connect(lambda func: func())
-        
-        # Initialize ADBUtils with loggers
-        try:
-            self.adb_utils = ADBUtils(debug_logger, error_logger)
-            
-            # Connect signals
-            if self.adb_utils:
-                # Debug logging
-                if self.adb_utils.debug_logger:
-                    self.adb_utils.debug_logger.add_listener(self._on_debug_entry)
-                    
-                # Device state changes
-                self.adb_utils.device_state_changed.connect(self._on_device_state_changed)
-                
-        except Exception as e:
-            self.error_logger.log_error(f"Failed to initialize ADBUtils: {str(e)}")
-            self.adb_utils = None
-            
         # Initialize UI
-        self._init_ui()
+        self.init_ui()
         
-        # Setup refresh timers
-        self.setup_refresh_timers()
-        
-        # Initial refresh if device connected
-        if self.adb_utils and self.adb_utils.adb_ready:
-            self.refresh_app_list(silent=True)
-            
-    def _init_ui(self):
+    def init_ui(self):
         """Initialize the UI"""
-        layout = QVBoxLayout()
+        layout = QVBoxLayout(self)
         
-        # Status bar
-        status_layout = QHBoxLayout()
-        self.status_label = QLabel("Checking device status...")
-        self.status_label.setStyleSheet("color: gray")
-        status_layout.addWidget(self.status_label)
+        # Create controls
+        controls_layout = QHBoxLayout()
         
-        # Refresh button
-        self.refresh_btn = QPushButton("Refresh")
-        self.refresh_btn.setEnabled(False)
-        self.refresh_btn.clicked.connect(self.refresh_app_list)
-        status_layout.addWidget(self.refresh_btn)
+        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button.clicked.connect(self.refresh_apps)
+        controls_layout.addWidget(self.refresh_button)
         
-        # Auto refresh checkbox
-        self.auto_refresh = QCheckBox("Auto Refresh")
-        self.auto_refresh.setEnabled(False)
-        self.auto_refresh.stateChanged.connect(self._on_auto_refresh_changed)
-        status_layout.addWidget(self.auto_refresh)
+        self.system_apps_button = QPushButton("Show System Apps")
+        self.system_apps_button.setCheckable(True)
+        self.system_apps_button.clicked.connect(self.toggle_system_apps)
+        controls_layout.addWidget(self.system_apps_button)
         
-        # Show system apps checkbox
-        self.show_system_apps = QCheckBox("Show System Apps")
-        self.show_system_apps.setEnabled(False)
-        self.show_system_apps.stateChanged.connect(self._on_show_system_apps_changed)
-        status_layout.addWidget(self.show_system_apps)
+        controls_layout.addStretch()
         
-        layout.addLayout(status_layout)
+        # Add progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.hide()
+        controls_layout.addWidget(self.progress_bar)
         
-        # App list
-        self.app_list = QListWidget()
-        self.app_list.itemSelectionChanged.connect(self._on_app_selected)
-        layout.addWidget(self.app_list)
+        layout.addLayout(controls_layout)
         
-        # App details
-        details_group = QGroupBox("App Details")
-        details_layout = QVBoxLayout()
+        # Create table
+        self.table = QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["Name", "Package", "Memory Usage"])
         
-        # Memory usage
-        self.memory_label = QLabel("Memory Usage: N/A")
-        details_layout.addWidget(self.memory_label)
+        # Set table properties
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         
-        # Analytics
-        self.analytics_text = QTextEdit()
-        self.analytics_text.setReadOnly(True)
-        self.analytics_text.setMinimumHeight(100)
-        details_layout.addWidget(self.analytics_text)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
         
-        details_group.setLayout(details_layout)
-        layout.addWidget(details_group)
+        # Add context menu
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.show_context_menu)
         
-        self.setLayout(layout)
+        layout.addWidget(self.table)
         
-    def _on_device_state_changed(self, connected: bool):
-        """Handle device connection state change"""
-        # Update UI elements
-        self.refresh_btn.setEnabled(connected)
-        self.auto_refresh.setEnabled(connected)
-        self.show_system_apps.setEnabled(connected)
-        
-        # Update status
-        if connected:
-            self.status_label.setText("Device connected")
-            self.status_label.setStyleSheet("color: green")
-            self.refresh_app_list(silent=True)
-        else:
-            self.status_label.setText("No device connected")
-            self.status_label.setStyleSheet("color: red")
-            self.app_list.clear()
-            self.details_text.clear()
+        # Initial state
+        self.handle_device_state_changed(False)
 
-    def _on_debug_entry(self, message: str, level: str, category: str):
-        """Handle debug log entry"""
-        # Update status label if it's a device status message
-        if category == 'device':
-            self.status_label.setText(message)
-            if level == 'error':
-                self.status_label.setStyleSheet("color: red")
-            elif level == 'warning':
-                self.status_label.setStyleSheet("color: orange")
-            else:
-                self.status_label.setStyleSheet("color: green")
+    def refresh_apps(self):
+        """Refresh the list of installed apps"""
+        # Show progress bar
+        self.progress_bar.setValue(0)
+        self.progress_bar.show()
+        
+        # Disable controls
+        self.refresh_button.setEnabled(False)
+        self.system_apps_button.setEnabled(False)
+        
+        # Clear table
+        self.table.setRowCount(0)
+        
+        # Create and start worker
+        if self.worker:
+            self.worker.quit()
+            
+        self.worker = AppTabWorker(self.adb_utils)
+        self.worker.include_system = self.system_apps_button.isChecked()
+        
+        # Connect signals
+        self.worker.finished.connect(self.handle_apps_loaded)
+        self.worker.error.connect(self.handle_error)
+        self.worker.progress.connect(self.progress_bar.setValue)
+        
+        # Start worker
+        self.worker.start()
 
-    def _on_error(self, error_msg: str):
-        """Handle error from worker thread"""
-        self.error_logger.log_error(error_msg)
-        QMessageBox.critical(self, "Error", error_msg)
+    def handle_apps_loaded(self, apps: List[Dict]):
+        """Handle loaded app data"""
+        # Update table
+        self.table.setRowCount(len(apps))
+        
+        for i, app in enumerate(apps):
+            # App name
+            name_item = QTableWidgetItem(app['name'])
+            self.table.setItem(i, 0, name_item)
+            
+            # Package name
+            package_item = QTableWidgetItem(app['package'])
+            self.table.setItem(i, 1, package_item)
+            
+            # Memory usage (format as MB)
+            memory_mb = app['memory'] / 1024  # Convert KB to MB
+            memory_item = QTableWidgetItem(f"{memory_mb:.1f} MB")
+            memory_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.table.setItem(i, 2, memory_item)
+            
+        # Hide progress and enable controls
+        self.progress_bar.hide()
+        self.refresh_button.setEnabled(True)
+        self.system_apps_button.setEnabled(True)
+        
+        # Log success
+        self.debug_logger.log_debug(
+            f"Loaded {len(apps)} apps",
+            "app",
+            "info"
+        )
 
-    def setup_refresh_timers(self):
-        """Set up refresh timers"""
-        # App list refresh timer
-        self.app_refresh_timer = QTimer()
-        self.app_refresh_timer.timeout.connect(lambda: self.refresh_app_list(silent=True))
-        self.app_refresh_timer.start(5000)  # Every 5 seconds
+    def handle_error(self, error: str):
+        """Handle worker error"""
+        # Hide progress and enable controls
+        self.progress_bar.hide()
+        self.refresh_button.setEnabled(True)
+        self.system_apps_button.setEnabled(True)
         
-        # Memory refresh timer
-        self.memory_refresh_timer = QTimer()
-        self.memory_refresh_timer.timeout.connect(self._refresh_memory)
-        self.memory_refresh_timer.start(2000)  # Every 2 seconds
+        # Show error
+        QMessageBox.warning(self, "Error", error)
         
-    def refresh_app_list(self, silent=False):
-        """Refresh the app list"""
-        worker = AppTabWorker(self.adb_utils, self.debug_logger, self.error_logger)
-        worker.signals.apps_ready.connect(self._handle_apps_ready)
-        worker.signals.error.connect(self._handle_error)
-        worker.signals.progress.connect(self._handle_progress)
-        self.threadpool = QThreadPool()
-        self.threadpool.start(worker)
-        
-    def _handle_apps_ready(self, apps: dict):
-        """Handle apps fetched from worker thread"""
-        try:
-            self.app_list.clear()
-            
-            # Add user apps
-            if 'user' in apps:
-                user_apps = apps['user']
-                self._add_apps_to_list("User Apps", user_apps)
-                
-            # Add system apps
-            if 'system' in apps:
-                system_apps = apps['system']
-                self._add_apps_to_list("System Apps", system_apps)
-                
-            self.debug_logger.log_debug(
-                f"Updated app list with {len(apps.get('user', []))} user apps and {len(apps.get('system', []))} system apps",
-                "ui",
-                "info"
-            )
-            
-        except Exception as e:
-            self.error_logger.log_error(
-                f"Failed to update app list: {str(e)}",
-                ErrorCode.UI_UPDATE_FAILED
-            )
-            
-    def _handle_error(self, message: str):
-        """Handle error from worker thread"""
-        self.status_label.setText(f"Error: {message}")
-        self.status_label.setStyleSheet("color: red")
-        
-    def _handle_progress(self, message: str):
-        """Handle progress update from worker thread"""
-        self.status_label.setText(message)
-        self.status_label.setStyleSheet("")
-        
-    def _add_apps_to_list(self, title: str, apps: list):
-        """Add apps to list widget"""
-        for app in apps:
-            item = QListWidgetItem()
-            item.setText(f"{app['name']} ({app['package']})")
-            item.setData(Qt.UserRole, app['package'])
-            
-            if app.get('system', False):
-                item.setForeground(QBrush(QColor('gray')))
-                
-            self.app_list.addItem(item)
-            
-    def _refresh_memory(self):
-        """Refresh memory info for selected app"""
-        if not self.adb_utils:
-            QMessageBox.warning(self, "Warning", "ADBUtils not initialized")
+        # Log error
+        self.error_logger.log_error(
+            f"Failed to load apps: {error}",
+            ErrorCode.PACKAGE_NOT_FOUND
+        )
+
+    def toggle_system_apps(self):
+        """Toggle system apps visibility"""
+        self.refresh_apps()
+
+    def show_context_menu(self, position):
+        """Show context menu for selected app"""
+        # Get selected row
+        row = self.table.rowAt(position.y())
+        if row < 0:
             return
             
-        try:
-            item = self.app_list.currentItem()
-            if item:
-                self._on_selection_changed()
-                
-        except Exception as e:
-            self.error_logger.log_error(f"Failed to refresh memory: {str(e)}")
-            QMessageBox.warning(self, "Error", f"Failed to refresh memory: {str(e)}")
-            
-    def _update_memory_info(self):
-        """Update memory information safely"""
-        if not self.adb_utils or not self.adb_utils.adb_ready:
-            return
-            
-        current_item = self.app_list.currentItem()
-        if not current_item:
-            return
-            
-        try:
-            package = current_item.data(Qt.UserRole)
-            if package:
-                memory_info = self.adb_utils.get_memory_info(package)
-                if memory_info:
-                    self.memory_info_label.setText(f"Memory Usage: {memory_info['total_mb']:.1f} MB")
-        except Exception as e:
-            self.error_logger.log_error(f"Failed to update memory info: {str(e)}")
-            
-    def _update_analytics(self):
-        """Update analytics information safely"""
-        if not self.adb_utils or not self.adb_utils.adb_ready:
-            return
-            
-        current_item = self.app_list.currentItem()
-        if not current_item:
-            return
-            
-        try:
-            package = current_item.data(Qt.UserRole)
-            if package:
-                # Use ThreadPoolExecutor for analytics updates
-                self.executor.submit(self._fetch_analytics, package)
-        except Exception as e:
-            self.error_logger.log_error(f"Failed to update analytics: {str(e)}")
-    
-    def _fetch_analytics(self, package: str):
-        """Fetch analytics data in background"""
-        try:
-            # Get analytics data
-            analytics = self.adb_utils.get_app_analytics(package)
-            if not analytics:
-                return
-                
-            # Update UI in main thread using signals
-            self.cpu_label.setText(f"CPU Usage: {analytics.get('cpu_usage', 0):.1f}%")
-            self.battery_label.setText(f"Battery Drain: {analytics.get('battery_drain', 0):.1f}%/hr")
-            
-            # Network usage
-            rx_bytes = analytics.get('network', {}).get('rx_bytes', 0)
-            tx_bytes = analytics.get('network', {}).get('tx_bytes', 0)
-            rx_mb = rx_bytes / (1024 * 1024)
-            tx_mb = tx_bytes / (1024 * 1024)
-            
-            self.rx_label.setText(f"Received: {rx_mb:.1f} MB")
-            self.tx_label.setText(f"Transmitted: {tx_mb:.1f} MB")
-            
-            # Storage usage
-            storage = analytics.get('storage', {})
-            app_mb = storage.get('app_size', 0) / (1024 * 1024)
-            data_mb = storage.get('data_size', 0) / (1024 * 1024)
-            
-            self.app_size_label.setText(f"App Size: {app_mb:.1f} MB")
-            self.data_size_label.setText(f"Data Size: {data_mb:.1f} MB")
-            self.total_size_label.setText(f"Total Size: {app_mb + data_mb:.1f} MB")
-            
-        except Exception as e:
-            self.error_logger.log_error(f"Failed to fetch analytics: {str(e)}")
-            
-    def _on_selection_changed(self):
-        """Handle app selection"""
-        try:
-            items = self.app_list.selectedItems()
-            if not items:
-                self.memory_label.setText("Memory Usage: N/A")
-                self.analytics_text.clear()
-                return
-                
-            # Get selected package
-            package = items[0].data(Qt.UserRole)
-            if not package:
-                return
-                
-            # Update status
-            self.status_label.setText(f"Loading details for {package}...")
-            self.status_label.setStyleSheet("color: blue")
-            
-            # Get memory info
-            memory = self.adb_utils.get_memory_info(package)
-            if memory:
-                total = humanize.naturalsize(memory.get('total_memory', 0))
-                self.memory_label.setText(f"Memory Usage: {total}")
-            else:
-                self.memory_label.setText("Memory Usage: N/A")
-                
-            # Get analytics
-            analytics = self.adb_utils.get_app_analytics(package)
-            if analytics:
-                # Format analytics text
-                lines = []
-                
-                # CPU
-                cpu = analytics.get('cpu', 0)
-                lines.append(f"CPU Usage: {cpu:.1f}%")
-                
-                # Memory breakdown
-                if 'memory' in analytics:
-                    mem = analytics['memory']
-                    lines.extend([
-                        "\nMemory Breakdown:",
-                        f"  Java Heap: {humanize.naturalsize(mem.get('java', 0))}",
-                        f"  Native Heap: {humanize.naturalsize(mem.get('native', 0))}",
-                        f"  Code: {humanize.naturalsize(mem.get('code', 0))}",
-                        f"  Stack: {humanize.naturalsize(mem.get('stack', 0))}",
-                        f"  Graphics: {humanize.naturalsize(mem.get('graphics', 0))}"
-                    ])
-                
-                # Battery
-                battery = analytics.get('battery', 0)
-                lines.append(f"\nBattery Usage: {battery:.1f}%")
-                
-                # Network
-                rx = humanize.naturalsize(analytics.get('rx_bytes', 0))
-                tx = humanize.naturalsize(analytics.get('tx_bytes', 0))
-                lines.append(f"\nNetwork Traffic:")
-                lines.append(f"  Received: {rx}")
-                lines.append(f"  Sent: {tx}")
-                
-                # Update text
-                self.analytics_text.setText('\n'.join(lines))
-                
-                # Update status
-                self.status_label.setText("Details loaded")
-                self.status_label.setStyleSheet("color: green")
-            else:
-                self.analytics_text.setText("No analytics available")
-                self.status_label.setText("Could not load details")
-                self.status_label.setStyleSheet("color: orange")
-                
-        except Exception as e:
-            error_msg = f"Failed to update app details: {str(e)}"
-            self.error_logger.log_error(error_msg)
-            self.debug_logger.log_debug(error_msg, "app_select", "error")
-            
-            self.status_label.setText("Error: Failed to load details")
-            self.status_label.setStyleSheet("color: red")
-            
-    def _check_adb_status(self):
-        """Check ADB status and update UI accordingly"""
-        if not self.adb_utils:
-            return
-            
-        def check_worker():
-            try:
-                if self.adb_utils.check_adb_status():
-                    # ADB is ready, try to refresh app list
-                    self._refresh_app_list()
-                else:
-                    # Update UI in main thread
-                    self.update_ui_signal.emit(lambda: self._update_no_device_ui())
-            except Exception as e:
-                self.error_logger.log_error(f"Error checking device status: {str(e)}")
-                
-        # Run in worker thread
-        self.executor.submit(check_worker)
+        # Create menu
+        menu = QMenu()
         
-    def _update_no_device_ui(self):
-        """Update UI when no device is connected"""
-        self.app_list.clear()
-        self.app_list.addItem("No device connected")
-        self.status_label.setText("No device connected")
-        self.status_label.setStyleSheet("color: red")
-        self.refresh_btn.setEnabled(False)
-        self.auto_refresh.setEnabled(False)
-        self.show_system_apps.setEnabled(False)
+        # Add actions
+        clear_data = QAction("Clear App Data", self)
+        clear_data.triggered.connect(lambda: self.clear_app_data(row))
+        menu.addAction(clear_data)
         
-    def _refresh_app_list(self):
-        """Refresh app list silently"""
-        if not self.adb_utils or not self.adb_utils.adb_ready:
-            return
-            
-        # Use a worker thread for app list refresh
-        def refresh_worker():
-            try:
-                apps = self.adb_utils.get_installed_apps()
-                # Update UI in main thread
-                if apps:
-                    self.app_list.clear()
-                    for app in apps:
-                        name = app.get('name', app['package'])
-                        package = app['package']
-                        
-                        # If name is same as package, try to make it more readable
-                        if name == package:
-                            name = package.split('.')[-1].replace('_', ' ').title()
-                        
-                        item = AppListItem(name, package)
-                        if app.get('system', False):
-                            item.setForeground(Qt.gray)
-                        self.app_list.addItem(item)
-            except Exception as e:
-                self.error_logger.log_error(f"Failed to refresh app list: {str(e)}")
+        force_stop = QAction("Force Stop", self)
+        force_stop.triggered.connect(lambda: self.force_stop_app(row))
+        menu.addAction(force_stop)
         
-        # Run in worker thread
-        self.executor.submit(refresh_worker)
-    
-    def _on_auto_refresh_changed(self, state: int):
-        """Handle auto refresh checkbox state change"""
-        if state == Qt.Checked:
-            self.setup_refresh_timers()
-        else:
-            self.stop_refresh_timers()
-            
-    def setup_refresh_timers(self):
-        """Setup refresh timers"""
-        if hasattr(self, 'refresh_timer'):
-            self.refresh_timer.stop()
-            
-        self.refresh_timer = QTimer()
-        self.refresh_timer.timeout.connect(lambda: self.refresh_app_list(silent=True))
-        self.refresh_timer.start(5000)  # Refresh every 5 seconds
+        uninstall = QAction("Uninstall", self)
+        uninstall.triggered.connect(lambda: self.uninstall_app(row))
+        menu.addAction(uninstall)
         
-    def stop_refresh_timers(self):
-        """Stop refresh timers"""
-        if hasattr(self, 'refresh_timer'):
-            self.refresh_timer.stop()
-            
-    def closeEvent(self, event):
-        """Clean up resources when closing"""
-        self.executor.shutdown(wait=False)
-        for worker in self.workers:
-            worker.quit()
-            worker.wait()
-        super().closeEvent(event)
+        # Show menu
+        menu.exec_(QCursor.pos())
+
+    def clear_app_data(self, row: int):
+        """Clear data for selected app"""
+        package = self.table.item(row, 1).text()
+        # TODO: Implement clear data functionality
+        QMessageBox.information(self, "Not Implemented", "Clear data not implemented yet")
+
+    def force_stop_app(self, row: int):
+        """Force stop selected app"""
+        package = self.table.item(row, 1).text()
+        # TODO: Implement force stop functionality
+        QMessageBox.information(self, "Not Implemented", "Force stop not implemented yet")
+
+    def uninstall_app(self, row: int):
+        """Uninstall selected app"""
+        package = self.table.item(row, 1).text()
+        # TODO: Implement uninstall functionality
+        QMessageBox.information(self, "Not Implemented", "Uninstall not implemented yet")
+
+    def handle_device_state_changed(self, connected: bool):
+        """Handle device connection state changes"""
+        self.refresh_button.setEnabled(connected)
+        self.system_apps_button.setEnabled(connected)
         
-    def _on_show_system_apps_changed(self, state: int):
-        """Handle show system apps checkbox state change"""
-        if self.adb_utils:
-            self.adb_utils.include_system_apps = (state == Qt.Checked)
-            self.refresh_app_list()
-            
-    def _on_app_selected(self):
-        """Handle app selection change"""
-        selected_items = self.app_list.selectedItems()
-        if not selected_items:
-            self.details_text.clear()
-            return
-            
-        item = selected_items[0]
-        package = item.package_name
-        
-        # Start worker thread to get app details
-        worker = AppTabWorker(self.adb_utils, self.debug_logger, self.error_logger)
-        worker.signals.apps_ready.connect(self._on_app_details_received)
-        worker.signals.error.connect(self._on_error)
-        worker.fetch_apps(user_only=False, system_only=False)
-        self.threadpool = QThreadPool()
-        self.threadpool.start(worker)
-        
-    def _on_app_details_received(self, apps: dict):
-        """Handle app details received"""
-        if not apps:
-            self.details_text.clear()
-            return
-            
-        # Format details
-        text = f"Package: {apps.get('package_name', 'Unknown')}\n"
-        text += f"Version: {apps.get('version', 'Unknown')}\n"
-        text += f"Install time: {apps.get('install_time', 'Unknown')}\n"
-        text += f"Last updated: {apps.get('last_updated', 'Unknown')}\n"
-        text += f"Size: {humanize.naturalsize(apps.get('size', 0))}\n\n"
-        
-        # Add permissions
-        text += "Permissions:\n"
-        for perm in apps.get('permissions', []):
-            text += f"- {perm}\n"
-            
-        self.details_text.setText(text)
+        if not connected:
+            self.table.setRowCount(0)

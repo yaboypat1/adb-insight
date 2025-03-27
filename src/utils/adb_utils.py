@@ -4,6 +4,7 @@ import subprocess
 import time
 import re
 <<<<<<< HEAD
+<<<<<<< HEAD
 from typing import List, Dict, Optional, Tuple
 import logging
 
@@ -100,6 +101,59 @@ class ADBUtils:
         if not self.adb_path:
             return []
 =======
+            self.error_logger.log_error(f"Failed to initialize ADB client: {str(e)}", 
+                                    ErrorCode.ADB_SERVER_NOT_RUNNING)
+>>>>>>> parent of 5c1894b (all current bugs fixed)
+=======
+from typing import Dict, List, Tuple, Optional
+from pathlib import Path
+from adb_shell.adb_device import AdbDeviceUsb, AdbDeviceTcp
+from adb_shell.auth.sign_pythonrsa import PythonRSASigner
+from adb.adb_commands import AdbCommands
+from retry import retry
+import psutil
+import humanize
+from .error_utils import ErrorLogger, ErrorCode, ADBError
+from .debug_utils import DebugLogger
+import logging
+import shutil
+
+class ADBUtils:
+    """Enhanced utility class for ADB operations"""
+    
+    def __init__(self, debug_logger: DebugLogger, error_logger: ErrorLogger):
+        self.debug_logger = debug_logger
+        self.error_logger = error_logger
+        self.signer = None
+        self.adb_path = 'adb'  # Default to 'adb' in PATH
+        self._verify_adb_path()
+        self.device_cache = {}
+        self.app_cache = {}
+        self.last_device_check = 0
+        self.last_app_refresh = 0
+        self.cache_timeout = 5  # seconds
+        
+        # Initialize ADB client
+        self._init_adb_client()
+        
+    def _init_adb_client(self):
+        """Initialize ADB client with authentication"""
+        try:
+            # Set up authentication
+            key_path = os.path.expanduser('~/.android/adbkey')
+            if os.path.exists(key_path):
+                with open(key_path, 'rb') as f:
+                    private_key = f.read()
+                with open(key_path + '.pub', 'rb') as f:
+                    public_key = f.read()
+                self.signer = PythonRSASigner(public_key, private_key)
+                
+            # Initialize ADB commands
+            self.adb = AdbCommands()
+            
+            self.debug_logger.log_debug("ADB client initialized", "adb", "info")
+            
+        except Exception as e:
             self.error_logger.log_error(f"Failed to initialize ADB client: {str(e)}", 
                                     ErrorCode.ADB_SERVER_NOT_RUNNING)
 >>>>>>> parent of 5c1894b (all current bugs fixed)
@@ -364,6 +418,7 @@ class ADBUtils:
             return None
             
 <<<<<<< HEAD
+<<<<<<< HEAD
             return devices
             
         except Exception as e:
@@ -374,6 +429,11 @@ class ADBUtils:
         """Get list of installed packages"""
         if not self.adb_path:
             return []
+=======
+        success, output = self._run_adb(['shell', 'dumpsys', 'meminfo', package])
+        if not success:
+            return None
+>>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
         success, output = self._run_adb(['shell', 'dumpsys', 'meminfo', package])
         if not success:
@@ -534,6 +594,7 @@ class ADBUtils:
                     continue
                     
 <<<<<<< HEAD
+<<<<<<< HEAD
             return packages
             
         except Exception as e:
@@ -551,6 +612,10 @@ class ADBUtils:
             
             if result.returncode != 0:
                 return None
+=======
+                # Split on whitespace for extended info
+                parts = line.split(None, 2)  # Max 2 splits to handle device info
+>>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
                 # Split on whitespace for extended info
                 parts = line.split(None, 2)  # Max 2 splits to handle device info
@@ -593,6 +658,7 @@ class ADBUtils:
                     
         except Exception as e:
 <<<<<<< HEAD
+<<<<<<< HEAD
             logging.error(f"Error getting app name: {str(e)}")
             return None
     
@@ -601,11 +667,16 @@ class ADBUtils:
         if not self.adb_path:
             return None
 =======
+=======
+>>>>>>> parent of 5c1894b (all current bugs fixed)
             self.error_logger.log_error(
                 f"Failed to get device list: {str(e)}",
                 ErrorCode.ADB_COMMAND_FAILED
             )
             return []
+<<<<<<< HEAD
+>>>>>>> parent of 5c1894b (all current bugs fixed)
+=======
 >>>>>>> parent of 5c1894b (all current bugs fixed)
             
         self.debug_logger.log_debug(
@@ -624,6 +695,7 @@ class ADBUtils:
                 self.error_logger.log_error("Failed to start ADB server")
                 return False
                 
+<<<<<<< HEAD
 <<<<<<< HEAD
             memory_info = {
                 'total_pss': 0,
@@ -1390,8 +1462,41 @@ class ADBUtils:
             self.error_logger.log_error(f"Error checking device status: {str(e)}")
             return False
             
+=======
+            # Get device state
+            devices = self.get_connected_devices()
+            if not devices:
+                self.debug_logger.log_debug("No devices connected", "device", "warning")
+                return False
+                
+            # Check for exactly one device in proper state
+            connected_devices = [d for d in devices if d['state'] == 'device']
+            if not connected_devices:
+                self.debug_logger.log_debug("No device in ready state", "device", "warning")
+                return False
+            elif len(connected_devices) > 1:
+                self.debug_logger.log_debug("Multiple devices connected", "device", "warning")
+                return False
+                
+            # Device is ready
+            device = connected_devices[0]
+            self.debug_logger.log_debug(
+                f"Device {device['id']} connected ({device.get('model', 'Unknown')})", 
+                "device", 
+                "info"
+            )
+            return True
+            
+        except Exception as e:
+            self.error_logger.log_error(f"Error checking device status: {str(e)}")
+            return False
+            
+>>>>>>> parent of 5c1894b (all current bugs fixed)
     @property
     def adb_ready(self) -> bool:
         """Check if ADB is ready for commands"""
         return self.check_adb_status()
+<<<<<<< HEAD
+>>>>>>> parent of 5c1894b (all current bugs fixed)
+=======
 >>>>>>> parent of 5c1894b (all current bugs fixed)

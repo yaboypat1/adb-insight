@@ -41,6 +41,7 @@ class DebugLogger:
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     def __init__(self):
         """Initialize debug logger"""
         # Set up logger
@@ -158,6 +159,39 @@ class DebugLogger:
         console_handler.setLevel(logging.INFO)
         
 >>>>>>> parent of 5c1894b (all current bugs fixed)
+=======
+    def __new__(cls):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super(DebugLogger, cls).__new__(cls)
+                cls._instance._initialize()
+            return cls._instance
+    
+    def _initialize(self):
+        self.entries: List[DebugEntry] = []
+        self.max_entries = 1000  # Keep last 1000 entries
+        self.listeners: List[Callable] = []
+        self.entry_queue = Queue()
+        self._start_queue_processor()
+        
+        # Set up file logger
+        log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs')
+        os.makedirs(log_dir, exist_ok=True)
+        
+        log_file = os.path.join(log_dir, f'adb_insight_{datetime.now().strftime("%Y%m%d")}.log')
+        
+        self.logger = logging.getLogger('debug')
+        self.logger.setLevel(logging.DEBUG)
+        
+        # File handler
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(logging.DEBUG)
+        
+        # Console handler for important messages
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        
+>>>>>>> parent of 5c1894b (all current bugs fixed)
         # Formatters
         file_formatter = logging.Formatter(
             '%(asctime)s - %(levelname)s - [%(category)s] %(message)s',
@@ -207,6 +241,7 @@ class DebugLogger:
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         """Remove a debug message listener"""
         if listener in self.listeners:
             self.listeners.remove(listener)
@@ -234,6 +269,8 @@ class DebugLogger:
 >>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
 >>>>>>> parent of 5c1894b (all current bugs fixed)
+=======
+>>>>>>> parent of 5c1894b (all current bugs fixed)
         """Remove a debug entry listener"""
         with self._lock:
             if listener in self.listeners:
@@ -244,6 +281,9 @@ class DebugLogger:
         """Log a debug entry for an operation"""
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
+>>>>>>> parent of 5c1894b (all current bugs fixed)
+=======
 >>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
 >>>>>>> parent of 5c1894b (all current bugs fixed)
@@ -348,6 +388,7 @@ class DebugLogger:
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.entries.clear()
         
         # Also clear log file
@@ -357,6 +398,11 @@ class DebugLogger:
         except Exception as e:
             self.logger.error(f"Failed to clear debug log file: {str(e)}")
 
+=======
+        with self._lock:
+            self.entries.clear()
+    
+>>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
         with self._lock:
             self.entries.clear()
@@ -384,8 +430,11 @@ class DebugLogger:
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
             with open(self.debug_handler.baseFilename, 'r') as f:
 =======
+=======
+>>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
 >>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
@@ -397,6 +446,9 @@ class DebugLogger:
             with open(log_file, 'r') as f:
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
+>>>>>>> parent of 5c1894b (all current bugs fixed)
+=======
 >>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
 >>>>>>> parent of 5c1894b (all current bugs fixed)
@@ -430,9 +482,12 @@ class DebugLogger:
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
             with open(self.debug_handler.baseFilename, 'w'):
                 pass
 =======
+=======
+>>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
 >>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
@@ -444,6 +499,9 @@ class DebugLogger:
                     
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
+>>>>>>> parent of 5c1894b (all current bugs fixed)
+=======
 >>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
 >>>>>>> parent of 5c1894b (all current bugs fixed)
@@ -466,8 +524,11 @@ class DebugLogger:
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
             with open(self.debug_handler.baseFilename, 'r') as f:
 =======
+=======
+>>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
 >>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
@@ -479,6 +540,9 @@ class DebugLogger:
             with open(log_file, 'r') as f:
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
+>>>>>>> parent of 5c1894b (all current bugs fixed)
+=======
 >>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
 >>>>>>> parent of 5c1894b (all current bugs fixed)

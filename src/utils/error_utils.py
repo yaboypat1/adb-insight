@@ -148,6 +148,7 @@ class ErrorLogger:
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         # Set up error log file if no handlers exist
         if not self.logger.handlers:
             self.error_handler = logging.FileHandler(os.path.join(log_dir, 'errors.log'))
@@ -371,6 +372,62 @@ class ErrorLogger:
             
         except Exception as e:
 >>>>>>> parent of 5c1894b (all current bugs fixed)
+=======
+        # Set up error log file
+        self.error_log_file = os.path.join(log_dir, 'error.log')
+        self.error_handler = logging.FileHandler(self.error_log_file)
+        self.error_handler.setLevel(logging.ERROR)
+        
+        # Set up formatter
+        formatter = logging.Formatter(
+            '%(asctime)s - %(levelname)s - [%(error_code)s] %(message)s'
+        )
+        self.error_handler.setFormatter(formatter)
+        
+        # Configure logger
+        self.logger = logging.getLogger('error_logger')
+        self.logger.setLevel(logging.ERROR)
+        self.logger.addHandler(self.error_handler)
+        
+        # Error history
+        self.error_history: List[ErrorInfo] = []
+        self.max_history = 1000  # Keep last 1000 errors
+        
+    def log_error(self, message: str, code: ErrorCode = ErrorCode.UNKNOWN_ERROR, context: Dict = None) -> None:
+        """Log an error with enhanced context"""
+        try:
+            # Create error info
+            error_info = ErrorInfo(
+                code=code,
+                message=message,
+                timestamp=datetime.now(),
+                context=context or {},
+                stacktrace=None  # Will be filled if exception context exists
+            )
+            
+            # Add to history
+            self.error_history.append(error_info)
+            if len(self.error_history) > self.max_history:
+                self.error_history.pop(0)
+                
+            # Get error code name and message
+            error_name = code.name if isinstance(code, ErrorCode) else 'UNKNOWN_ERROR'
+            error_message = get_error_message(code) if isinstance(code, ErrorCode) else message
+            
+            # Log with extra context
+            extra = {
+                'error_code': error_name,
+                'context': context or {}
+            }
+            
+            self.logger.error(
+                f"{message} - {error_message}",
+                extra=extra,
+                exc_info=True  # Include stack trace if available
+            )
+            
+        except Exception as e:
+>>>>>>> parent of 5c1894b (all current bugs fixed)
             # Fallback logging if something goes wrong
             print(f"Error in error logger: {str(e)}")
             print(f"Original error: {message}")
@@ -398,6 +455,9 @@ class ErrorLogger:
         self.error_history.clear()
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
+>>>>>>> parent of 5c1894b (all current bugs fixed)
+=======
 >>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
 >>>>>>> parent of 5c1894b (all current bugs fixed)

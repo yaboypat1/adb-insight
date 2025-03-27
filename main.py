@@ -3,6 +3,7 @@ import os
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 
 # Add parent directory to Python path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,6 +30,11 @@ from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
 >>>>>>> parent of 5c1894b (all current bugs fixed)
+=======
+from pathlib import Path
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import Qt
+>>>>>>> parent of 5c1894b (all current bugs fixed)
 from src.gui.main_window import MainWindow
 from src.utils.debug_utils import DebugLogger
 from src.utils.error_utils import ErrorLogger
@@ -38,9 +44,12 @@ import logging
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 # Set up logging directory
 os.makedirs('logs', exist_ok=True)
 
+=======
+>>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
 >>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
@@ -98,6 +107,7 @@ def verify_environment() -> bool:
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         logging.error(f"Environment verification failed: {str(e)}")
         return False
 
@@ -126,6 +136,8 @@ def main():
 
 if __name__ == "__main__":
 =======
+=======
+>>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
 >>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
@@ -189,6 +201,9 @@ def main():
 if __name__ == '__main__':
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
+>>>>>>> parent of 5c1894b (all current bugs fixed)
+=======
 >>>>>>> parent of 5c1894b (all current bugs fixed)
 =======
 >>>>>>> parent of 5c1894b (all current bugs fixed)

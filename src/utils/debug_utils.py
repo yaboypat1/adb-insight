@@ -39,25 +39,22 @@ class DebugLogger:
     
     def __init__(self):
         """Initialize debug logger"""
+        # Set up logger
+        self.logger = logging.getLogger('debug')
+        self.logger.propagate = False  # Don't propagate to root logger
+        
         # Set up log directory
         log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs')
         os.makedirs(log_dir, exist_ok=True)
         
-        # Set up debug log file
-        self.debug_log_file = os.path.join(log_dir, 'debug.log')
-        self.debug_handler = logging.FileHandler(self.debug_log_file)
-        self.debug_handler.setLevel(logging.DEBUG)
-        
-        # Set up formatter
-        formatter = logging.Formatter(
-            '%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
-        )
-        self.debug_handler.setFormatter(formatter)
-        
-        # Configure logger
-        self.logger = logging.getLogger('debug_logger')
-        self.logger.setLevel(logging.DEBUG)
-        self.logger.addHandler(self.debug_handler)
+        # Set up debug log file if no handlers exist
+        if not self.logger.handlers:
+            self.debug_handler = logging.FileHandler(os.path.join(log_dir, 'debug.log'))
+            self.debug_handler.setLevel(logging.DEBUG)
+            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s')
+            self.debug_handler.setFormatter(formatter)
+            self.logger.addHandler(self.debug_handler)
+            self.logger.setLevel(logging.DEBUG)
         
         # Debug entries
         self.entries: List[DebugEntry] = []
@@ -91,10 +88,19 @@ class DebugLogger:
         if listener in self.listeners:
             self.listeners.remove(listener)
 
-    def log_debug(self, message: str, category: str = "general", level: str = "debug"):
+    def log_debug(self, message: str, category: str = None, level: str = "debug"):
         """Log a debug message"""
-        # Log to file
-        self.logger.debug(message)
+        if category:
+            message = f"[{category.upper()}] {message}"
+        
+        if level == "debug":
+            self.logger.debug(message)
+        elif level == "info":
+            self.logger.info(message)
+        elif level == "warning":
+            self.logger.warning(message)
+        elif level == "error":
+            self.logger.error(message)
         
         # Add to queue for listeners
         self.queue.put((message, level, category))
@@ -146,7 +152,7 @@ class DebugLogger:
         
         # Also clear log file
         try:
-            with open(self.debug_log_file, 'w'):
+            with open(self.debug_handler.baseFilename, 'w'):
                 pass
         except Exception as e:
             self.logger.error(f"Failed to clear debug log file: {str(e)}")
@@ -160,7 +166,7 @@ class DebugLogger:
                      category: Optional[str] = None) -> List[str]:
         """Get recent debug logs with optional filtering"""
         try:
-            with open(self.debug_log_file, 'r') as f:
+            with open(self.debug_handler.baseFilename, 'r') as f:
                 lines = f.readlines()
                 
             # Apply filters
@@ -186,7 +192,7 @@ class DebugLogger:
     def clear_log(self) -> None:
         """Clear the debug log file"""
         try:
-            with open(self.debug_log_file, 'w'):
+            with open(self.debug_handler.baseFilename, 'w'):
                 pass
         except Exception as e:
             print(f"Failed to clear debug log: {str(e)}")
@@ -202,7 +208,7 @@ class DebugLogger:
                 'error': 0
             }
             
-            with open(self.debug_log_file, 'r') as f:
+            with open(self.debug_handler.baseFilename, 'r') as f:
                 for line in f:
                     stats['total'] += 1
                     for level in ['DEBUG', 'INFO', 'WARNING', 'ERROR']:

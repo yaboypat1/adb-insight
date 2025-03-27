@@ -537,3 +537,348 @@ class ADBUtils:
         except Exception as e:
             logging.error(f"Error disconnecting device: {str(e)}")
             return False
+
+    def run_adb_command(self, args: List[str], timeout: int = 30) -> str:
+        """Run an ADB command with the given arguments"""
+        if not self.adb_path:
+            raise FileNotFoundError("ADB executable not found")
+            
+        try:
+            cmd = [self.adb_path] + args
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            
+            if result.returncode != 0:
+                raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
+                
+            return result.stdout.strip()
+            
+        except subprocess.TimeoutExpired as e:
+            logging.error(f"ADB command timed out after {timeout}s: {' '.join(cmd)}")
+            raise
+        except Exception as e:
+            logging.error(f"Error running ADB command: {str(e)}")
+            raise
+
+    def enable_tcpip(self, device_id: str, port: int = 5555) -> bool:
+        """Sets the specified device to listen on a TCP/IP port."""
+        logging.info(f"Attempting to enable TCP/IP mode on port {port} for device {device_id}...")
+        try:
+            # Use -s <device_id> to target the specific USB device
+            output = self.run_adb_command(['-s', device_id, 'tcpip', str(port)], timeout=10)
+            # Check output for success indication
+            if output and "restarting in TCP mode port" in output:
+                logging.info(f"Successfully enabled TCP/IP on {device_id}:{port}.")
+                return True
+            else:
+                # May succeed even without specific output on some devices
+                logging.warning(f"Enable TCP/IP command ran for {device_id}, output unclear but assuming success: {output}")
+                return True # Be optimistic, but user might need to check device
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logging.error(f"Failed to enable TCP/IP mode for {device_id}: {e}")
+            return False
+        except Exception as e:
+            logging.exception(f"Unexpected error enabling TCP/IP for {device_id}: {e}")
+            return False
+
+    def get_device_ip(self, device_id: str) -> Optional[str]:
+        """Attempts to get the IP address of the device's wlan0 interface via USB."""
+        logging.info(f"Attempting to get IP address for device {device_id} via USB...")
+        ip_address = None
+        try:
+            # Use -s <device_id> to target the specific USB device
+            # Ensure device has wifi enabled when running this
+            output = self.run_adb_command(['-s', device_id, 'shell', 'ip', 'addr', 'show', 'wlan0'], timeout=10)
+            if output:
+                # Parse output like: "inet 192.168.1.100/24 brd ..."
+                match = re.search(r'inet (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/', output)
+                if match:
+                    ip_address = match.group(1)
+                    logging.info(f"Found IP address {ip_address} for device {device_id}.")
+                else:
+                    logging.warning(f"Could not parse IP address from 'ip addr show wlan0' output for {device_id}. Is Wi-Fi connected?")
+            else:
+                logging.warning(f"Command 'ip addr show wlan0' returned no output for {device_id}.")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logging.error(f"Failed to get IP address for {device_id}: {e}")
+        except Exception as e:
+            logging.exception(f"Unexpected error getting IP for {device_id}: {e}")
+        return ip_address
+
+    def connect_wireless(self, ip_address: str, port: int = 5555) -> bool:
+        """Connects ADB to a device wirelessly."""
+        target = f"{ip_address}:{port}"
+        logging.info(f"Attempting to connect wirelessly to {target}...")
+        try:
+            # Longer timeout for network operations
+            output = self.run_adb_command(['connect', target], timeout=25)
+            # Check output for success variations
+            if output and (f"connected to {target}" in output or f"already connected to {target}" in output):
+                logging.info(f"Successfully connected or already connected to {target}.")
+                return True
+            else:
+                # If run_adb_command doesn't raise error but output is not success
+                logging.warning(f"Connect command to {target} ran, but output suggests failure: {output}")
+                return False
+        except subprocess.CalledProcessError as e:
+            # Explicit failure from ADB (e.g., connection refused, timeout from ADB side)
+            logging.error(f"Failed to connect to {target}. Error: {e.stderr or e.stdout or e}")
+            return False
+        except subprocess.TimeoutExpired:
+            logging.error(f"Timeout waiting for connect command to {target} to finish.")
+            return False
+        except FileNotFoundError as e:
+            logging.error(f"Failed to connect: ADB command not found: {e}")
+            return False
+        except Exception as e:
+            logging.exception(f"Unexpected error connecting to {target}: {e}")
+            return False
+
+    def disconnect_wireless(self, ip_address: str, port: int = 5555) -> bool:
+        """Disconnects ADB from a specific wireless device."""
+        target = f"{ip_address}:{port}"
+        logging.info(f"Attempting to disconnect from {target}...")
+        try:
+            output = self.run_adb_command(['disconnect', target], timeout=10)
+            # Check output
+            if output and f"disconnected {target}" in output:
+                logging.info(f"Successfully disconnected from {target}.")
+                return True
+            else:
+                # Might return nothing or error if not connected - treat absence of error as success?
+                logging.warning(f"Disconnect command for {target} output unclear, assuming success if no error raised: {output}")
+                return True
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logging.error(f"Failed to disconnect from {target}: {e}")
+            return False
+        except Exception as e:
+            logging.exception(f"Unexpected error disconnecting from {target}: {e}")
+            return False
+
+    def is_server_running(self) -> bool:
+        """Check if ADB server is running"""
+        try:
+            result = subprocess.run([self.adb_path, 'devices'], capture_output=True, text=True)
+            return result.returncode == 0
+        except Exception as e:
+            logging.error(f"Error checking ADB server status: {str(e)}")
+            return False
+
+    def get_installed_packages(self, device_id: str) -> List[Dict[str, str]]:
+        """Get list of installed packages on device with details"""
+        packages = []
+        
+        try:
+            # Get package list
+            _, stdout, _ = self._run_command(['-s', device_id, 'shell', 'pm', 'list', 'packages', '-f', '-3'])
+            
+            for line in stdout.split('\n'):
+                if not line.strip():
+                    continue
+                    
+                # Parse package line
+                # Format: package:/data/app/com.example.app-hash/base.apk=com.example.app
+                match = re.match(r'package:(.+)=(.+)', line.strip())
+                if match:
+                    apk_path, package_name = match.groups()
+                    
+                    # Get detailed package info using dumpsys
+                    _, dump_out, _ = self._run_command(['-s', device_id, 'shell', 'dumpsys', 'package', package_name])
+                    
+                    package_info = {
+                        'name': package_name,
+                        'path': apk_path,
+                        'version': 'Unknown',
+                        'size': '0 B',
+                        'status': 'Unknown'
+                    }
+                    
+                    # Get version
+                    version_match = re.search(r'versionName=([^\s]+)', dump_out)
+                    if version_match:
+                        package_info['version'] = version_match.group(1)
+                    
+                    # Get package size using ls -l
+                    _, size_out, _ = self._run_command(['-s', device_id, 'shell', f'ls -l "{apk_path}"'])
+                    if size_out:
+                        # Parse ls output format: -rw-r--r-- 1 system system 1234567 2024-01-01 12:00 /path/to/file
+                        parts = size_out.split()
+                        if len(parts) >= 5:
+                            try:
+                                size_bytes = int(parts[4])  # Size is usually the 5th field
+                                package_info['size'] = self._format_size(size_bytes)
+                            except (ValueError, IndexError):
+                                pass
+                    
+                    # Determine package status
+                    if 'SYSTEM' in dump_out:
+                        package_info['status'] = 'System'
+                    elif 'DISABLED' in dump_out or 'disabled=1' in dump_out:
+                        package_info['status'] = 'Disabled'
+                    else:
+                        package_info['status'] = 'User'
+                    
+                    packages.append(package_info)
+            
+            return packages
+            
+        except Exception as e:
+            logging.error(f"Error getting installed packages: {str(e)}")
+            return []
+    
+    def _format_size(self, size_bytes: int) -> str:
+        """Format bytes into human readable size"""
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size_bytes < 1024.0:
+                return f"{size_bytes:.1f} {unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:.1f} TB"
+    
+    def launch_app(self, device_id: str, package_name: str) -> bool:
+        """Launch an app on the device"""
+        try:
+            # Get the main activity
+            _, stdout, _ = self._run_command(['-s', device_id, 'shell', 'cmd', 'package', 'resolve-activity', '--brief', package_name])
+            activity = stdout.strip()
+            
+            if not activity:
+                # Try dumpsys to find launcher activity
+                _, stdout, _ = self._run_command(['-s', device_id, 'shell', 'dumpsys', 'package', package_name, '|', 'grep', '-A', '1', 'android.intent.category.LAUNCHER'])
+                match = re.search(r'([^\s]+)/[^\s]+', stdout)
+                if match:
+                    activity = match.group(1)
+            
+            if activity:
+                returncode, _, stderr = self._run_command(['-s', device_id, 'shell', 'am', 'start', '-n', activity])
+                return returncode == 0 and not stderr
+            else:
+                logging.error(f"Could not find main activity for {package_name}")
+                return False
+                
+        except Exception as e:
+            logging.error(f"Error launching app {package_name}: {str(e)}")
+            return False
+
+    def uninstall_package(self, device_id: str, package_name: str) -> bool:
+        """Uninstall an app from the device"""
+        try:
+            returncode, stdout, stderr = self._run_command(['-s', device_id, 'uninstall', package_name])
+            return returncode == 0 and 'Success' in stdout
+        except Exception as e:
+            logging.error(f"Error uninstalling package {package_name}: {str(e)}")
+            return False
+
+    def disable_app(self, device_id: str, package_name: str) -> bool:
+        """Disable an app on the device"""
+        try:
+            returncode, _, stderr = self._run_command(['-s', device_id, 'shell', 'pm', 'disable-user', '--user', '0', package_name])
+            return returncode == 0 and not stderr
+        except Exception as e:
+            logging.error(f"Error disabling app {package_name}: {str(e)}")
+            return False
+
+    def _run_command(self, command: List[str], timeout: Optional[int] = None) -> Tuple[int, str, str]:
+        """Run an ADB command and return exit code, stdout, and stderr"""
+        try:
+            # Create full command with ADB path
+            full_command = [self.adb_path] + command
+            
+            # Run command and capture output
+            process = subprocess.Popen(
+                full_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            # Wait for process to complete
+            stdout, stderr = process.communicate(timeout=timeout)
+            return process.returncode, stdout.strip(), stderr.strip()
+            
+        except subprocess.TimeoutExpired:
+            return 1, "", "Command timed out"
+        except Exception as e:
+            return 1, "", str(e)
+
+    def get_package_details_with_size(self, package: str, device_id: str) -> Optional[Dict]:
+        """Get detailed information about a package with size"""
+        if not self.adb_path:
+            return None
+            
+        try:
+            # Get package info
+            _, stdout, _ = self._run_command(['-s', device_id, 'shell', 'dumpsys', 'package', package])
+            
+            if not stdout:
+                return None
+                
+            details = {
+                'is_stopped': False,
+                'is_disabled': False,
+                'is_suspended': False,
+                'last_updated': None,
+                'version': None,
+                'target_sdk': None,
+                'size': None
+            }
+            
+            output = stdout
+            
+            # Check package flags
+            flags_match = re.search(r'pkgFlags=\[\s*(.*?)\s*\]', output)
+            if flags_match:
+                flags = flags_match.group(1).split()
+                details['is_stopped'] = any('STOPPED' in flag for flag in flags)
+                details['is_suspended'] = any('SUSPENDED' in flag for flag in flags)
+            
+            # Check enabled state
+            state_match = re.search(r'enabled=(\d+)\s+suspended=(\d+)', output)
+            if state_match:
+                enabled = state_match.group(1) == '1'
+                suspended = state_match.group(2) == '1'
+                details['is_disabled'] = not enabled
+                details['is_suspended'] = suspended
+            else:
+                # Try alternate format
+                state_match = re.search(r'enabledState=(\d+)', output)
+                if state_match:
+                    # Android component states:
+                    # 0 = DEFAULT (enabled)
+                    # 1 = ENABLED
+                    # 2 = DISABLED
+                    # 3 = DISABLED_USER
+                    # 4 = DISABLED_UNTIL_USED
+                    state = int(state_match.group(1))
+                    details['is_disabled'] = state in [2, 3]  # Only consider explicitly disabled states
+                    details['is_suspended'] = state == 4  # DISABLED_UNTIL_USED is more like suspended
+            
+            # Get version info
+            version_match = re.search(r'versionName=([^\s]+)', output)
+            if version_match:
+                details['version'] = version_match.group(1)
+                
+            # Get target SDK
+            sdk_match = re.search(r'targetSdk=(\d+)', output)
+            if sdk_match:
+                details['target_sdk'] = int(sdk_match.group(1))
+                
+            # Get last updated time
+            time_match = re.search(r'lastUpdateTime=(\d+)', output)
+            if time_match:
+                details['last_updated'] = int(time_match.group(1))
+            
+            # Get package size
+            _, size_out, _ = self._run_command(['-s', device_id, 'shell', 'du', '-k', '/data/app/' + package])
+            if size_out:
+                try:
+                    size_kb = int(size_out.split()[0])
+                    details['size'] = size_kb * 1024  # Convert KB to bytes
+                except (ValueError, IndexError):
+                    details['size'] = 'Unknown'
+            else:
+                details['size'] = 'Unknown'
+            
+            return details
+            
+        except Exception as e:
+            logging.error(f"Error getting package details for {package}: {str(e)}")
+            return None

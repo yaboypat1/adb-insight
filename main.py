@@ -1,81 +1,59 @@
 import sys
 import os
-import logging
-from PyQt5.QtWidgets import QApplication
+
+# Add parent directory to Python path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Enable High DPI support before importing Qt
+os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
 from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QApplication
+QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+
 from src.gui.main_window import MainWindow
 from src.utils.debug_utils import DebugLogger
 from src.utils.error_utils import ErrorLogger
 from src.utils.adb_utils import ADBUtils
+import logging
 
-# Set up logging
+# Set up logging directory
 os.makedirs('logs', exist_ok=True)
-debug_log = os.path.join('logs', 'debug.log')
-error_log = os.path.join('logs', 'errors.log')
-
-logging.basicConfig(level=logging.DEBUG)
-
-# Configure debug logger
-debug_handler = logging.FileHandler(debug_log)
-debug_handler.setLevel(logging.DEBUG)
-debug_handler.setFormatter(logging.Formatter(
-    '%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
-))
-
-# Configure error logger
-error_handler = logging.FileHandler(error_log)
-error_handler.setLevel(logging.ERROR)
-error_handler.setFormatter(logging.Formatter(
-    '%(asctime)s - ERROR - %(message)s\n'
-))
-
-# Add handlers
-logger = logging.getLogger()
-logger.addHandler(debug_handler)
-logger.addHandler(error_handler)
 
 def verify_environment() -> bool:
     """Verify required environment setup"""
     try:
-        # Check ADB
-        adb_utils = ADBUtils()
-        if not adb_utils.adb_path:
+        adb = ADBUtils()
+        if not adb.adb_path:
             logging.error("ADB executable not found")
             return False
-            
         return True
-        
     except Exception as e:
         logging.error(f"Environment verification failed: {str(e)}")
         return False
 
 def main():
-    """Main application entry point"""
-    try:
-        # Verify environment
-        if not verify_environment():
-            return 1
-            
-        # Create Qt application
-        app = QApplication(sys.argv)
-        app.setStyle('Fusion')
-        
-        # Enable high DPI support
-        if hasattr(Qt, 'AA_EnableHighDpiScaling'):
-            QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-        if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
-            QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
-        
-        # Create and show main window
-        window = MainWindow()
-        window.show()
-        
-        # Run application
-        sys.exit(app.exec_())
-        
-    except Exception as e:
-        logging.error(f"Application crashed: {str(e)}", exc_info=True)
-        sys.exit(1)
+    """Main entry point"""
+    # Create application
+    app = QApplication(sys.argv)
+    
+    # Verify environment
+    if not verify_environment():
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.critical(None, "Error", "Failed to initialize ADB environment")
+        return 1
+    
+    # Create utilities
+    adb_utils = ADBUtils()
+    debug_logger = DebugLogger()
+    error_logger = ErrorLogger()
+    
+    # Create main window
+    window = MainWindow(adb_utils, debug_logger, error_logger)
+    window.show()
+    
+    # Run event loop
+    return app.exec_()
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
